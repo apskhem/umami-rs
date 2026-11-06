@@ -2309,6 +2309,7 @@ dependencies = [
 name = "umami-parity"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "reqwest",
  "serde",
  "serde_json",

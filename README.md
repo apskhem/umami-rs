@@ -99,7 +99,9 @@ TEST_DATABASE_URL=postgresql://umami:umami@localhost:5432/umami \
 this repo) on one Postgres, each with its own database, plus each server on the
 database the other migrated. The parity tests send both the same requests and assert
 identical responses and rows, an identical schema, and that each server accepts the
-other's migrations:
+other's migrations. A browser test also runs the real tracker in headless Chrome
+against both servers (skipped if no Chrome or Chromium is found; set `PARITY_CHROME`
+to choose one):
 
 ```sh
 docker compose -f parity/compose.yaml up -d --build --wait
