@@ -64,16 +64,22 @@ cd tools/ua-rules && npm ci --ignore-scripts && npm run generate && npm run fixt
 
 ## Authentication
 
-`POST /api/auth/login`, `/verify`, `/logout` and `/sso`, `GET /api/me` and
-`GET /api/config` behave as upstream's. Session tokens use upstream's format
-(an encrypted JWT keyed by `APP_SECRET`, bound to the password), so a token issued
-by either server is accepted by the other, and changing a password signs the user
-out of both. API keys (`Bearer umami_...`) and share tokens are accepted as upstream
-accepts them. Sessions are stateless: Redis-backed sessions (`REDIS_URL`) are not
-supported, so `/api/auth/sso` fails as it does upstream without Redis.
+Login (`/api/auth/*`), `/api/me`, `/api/config`, password changes, API keys
+(`/api/me/api-keys`) and two-factor authentication (`/api/2fa/*` and the admin
+policies under `/api/admin/**/2fa`) behave as upstream's.
 
-Not yet implemented: completing a two-factor login (`/api/2fa/*`), managing API
-keys and changing passwords.
+- Session tokens use upstream's format (an encrypted JWT keyed by `APP_SECRET`,
+  bound to the password), so a token issued by either server is accepted by the
+  other, and changing a password signs the user out of both.
+- Two-factor authentication needs `TWO_FACTOR_ENCRYPTION_KEY` and is compatible with
+  upstream's stored secrets, backup codes, lockout (5 failures, 15 minutes) and
+  replay protection.
+- Sessions are stateless: Redis-backed sessions (`REDIS_URL`) are not supported, so
+  `/api/auth/sso` fails as it does upstream without Redis.
+
+Differences from upstream: the 2FA setup QR code is an SVG rather than a PNG (same
+code); a non-numeric 2FA code is rejected as invalid (upstream errors with 500); and
+malformed IDs in paths return 404 (upstream errors with 500).
 
 ## Tracker script
 

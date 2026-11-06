@@ -16,6 +16,29 @@ use uuid::Uuid;
 /// The `APP_SECRET` both servers run with (see `compose.yaml`).
 pub const APP_SECRET: &str = "parity-secret";
 
+/// bcrypt of "umami", as seeded by upstream's first migration.
+pub const UMAMI_PASSWORD_HASH: &str =
+    "$2b$10$BUli0c.muyCW1ErNJc3jL.vFRFtFJWrT8/GcR4A.sUdCznaXiqFXa";
+
+/// A user created in both databases by [`Stack::create_user`].
+pub struct TestUser {
+    pub id: Uuid,
+    pub username: String,
+}
+
+/// `Authorization` header value for a token.
+pub fn bearer(token: &str) -> String {
+    format!("Bearer {token}")
+}
+
+/// The `token` field of a login response.
+pub fn token(response: &Response) -> String {
+    response.body["token"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no token in {response:?}"))
+        .to_owned()
+}
+
 /// The `TWO_FACTOR_ENCRYPTION_KEY` both servers run with (see `compose.yaml`).
 pub const TWO_FACTOR_KEY: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
@@ -225,6 +248,36 @@ impl Stack {
                 .await,
             self.call(&self.rs, method, path, headers, body).await,
         )
+    }
+
+    /// Creates the same user (id, username, password `umami`, role, creation time)
+    /// in both databases.
+    pub async fn create_user(&self, role: &str) -> TestUser {
+        let id = Uuid::new_v4();
+        let username = format!("parity-{}", &id.simple().to_string()[..12]);
+
+        for target in self.targets() {
+            sqlx::query(
+                r#"insert into "user" (user_id, username, password, role, created_at)
+                   values ($1, $2, $3, $4, '2026-01-02T03:04:05.678Z')"#,
+            )
+            .bind(id)
+            .bind(&username)
+            .bind(UMAMI_PASSWORD_HASH)
+            .bind(role)
+            .execute(&target.db)
+            .await
+            .unwrap();
+        }
+
+        TestUser { id, username }
+    }
+
+    /// Logs in on both servers; returns (upstream, rs).
+    pub async fn login(&self, username: &str, password: &str) -> (Response, Response) {
+        let body = serde_json::json!({ "username": username, "password": password });
+        self.call_both(reqwest::Method::POST, "/api/auth/login", &[], Some(&body))
+            .await
     }
 
     /// Both servers, for setting up identical data in each database.

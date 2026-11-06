@@ -9,6 +9,8 @@
 
 pub mod password;
 pub mod store;
+pub mod totp;
+pub mod two_factor;
 
 use axum::extract::FromRequestParts;
 use axum::http::HeaderMap;

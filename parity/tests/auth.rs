@@ -8,55 +8,9 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use reqwest::Method;
 use serde_json::{Value, json};
-use umami_parity::{APP_SECRET, Response, Stack, TWO_FACTOR_KEY, assert_same};
+use umami_parity::{APP_SECRET, Stack, TWO_FACTOR_KEY, assert_same, bearer, token};
 use umami_server::{crypto, jwt};
 use uuid::Uuid;
-
-/// bcrypt of "umami", as seeded by upstream's first migration.
-const UMAMI_HASH: &str = "$2b$10$BUli0c.muyCW1ErNJc3jL.vFRFtFJWrT8/GcR4A.sUdCznaXiqFXa";
-
-struct User {
-    id: Uuid,
-    username: String,
-}
-
-/// Creates the same user (id, username, password "umami", role, creation time) in
-/// both databases.
-async fn create_user(stack: &Stack, role: &str) -> User {
-    let id = Uuid::new_v4();
-    let username = format!("parity-{}", &id.simple().to_string()[..12]);
-
-    for target in stack.targets() {
-        sqlx::query(
-            r#"insert into "user" (user_id, username, password, role, created_at)
-               values ($1, $2, $3, $4, '2026-01-02T03:04:05.678Z')"#,
-        )
-        .bind(id)
-        .bind(&username)
-        .bind(UMAMI_HASH)
-        .bind(role)
-        .execute(&target.db)
-        .await
-        .unwrap();
-    }
-
-    User { id, username }
-}
-
-async fn login(stack: &Stack, username: &str, password: &str) -> (Response, Response) {
-    let body = json!({ "username": username, "password": password });
-    stack
-        .call_both(Method::POST, "/api/auth/login", &[], Some(&body))
-        .await
-}
-
-fn bearer(token: &str) -> String {
-    format!("Bearer {token}")
-}
-
-fn token(response: &Response) -> String {
-    response.body["token"].as_str().expect("token").to_owned()
-}
 
 fn secret() -> String {
     crypto::hash(&[APP_SECRET])
@@ -66,11 +20,11 @@ fn secret() -> String {
 #[ignore = "requires the parity stack (parity/compose.yaml)"]
 async fn login_matches_upstream() {
     let stack = Stack::connect().await;
-    let user = create_user(&stack, "admin").await;
+    let user = stack.create_user("admin").await;
 
     // The username is matched case-insensitively and echoed as submitted.
     for username in [user.username.clone(), user.username.to_uppercase()] {
-        let (upstream, rs) = login(&stack, &username, "umami").await;
+        let (upstream, rs) = stack.login(&username, "umami").await;
 
         assert_eq!(upstream.status, 200, "{upstream:?}");
         assert_same(&upstream, &rs, &["token"], "login");
@@ -82,7 +36,7 @@ async fn login_matches_upstream() {
 #[ignore = "requires the parity stack (parity/compose.yaml)"]
 async fn login_failures_match_upstream() {
     let stack = Stack::connect().await;
-    let user = create_user(&stack, "user").await;
+    let user = stack.create_user("user").await;
 
     let cases = [
         json!({ "username": user.username, "password": "wrong" }),
@@ -107,7 +61,7 @@ async fn login_failures_match_upstream() {
             .await
             .unwrap();
     }
-    let (upstream, rs) = login(&stack, &user.username, "umami").await;
+    let (upstream, rs) = stack.login(&user.username, "umami").await;
     assert_eq!(upstream.status, 401);
     assert_same(&upstream, &rs, &[], "deleted user");
 }
@@ -117,8 +71,8 @@ async fn login_failures_match_upstream() {
 #[ignore = "requires the parity stack (parity/compose.yaml)"]
 async fn session_tokens_are_interchangeable() {
     let stack = Stack::connect().await;
-    let user = create_user(&stack, "user").await;
-    let (upstream_login, rs_login) = login(&stack, &user.username, "umami").await;
+    let user = stack.create_user("user").await;
+    let (upstream_login, rs_login) = stack.login(&user.username, "umami").await;
 
     for token in [token(&upstream_login), token(&rs_login)] {
         let auth = bearer(&token);
@@ -145,8 +99,8 @@ async fn session_tokens_are_interchangeable() {
 #[ignore = "requires the parity stack (parity/compose.yaml)"]
 async fn changing_the_password_revokes_tokens() {
     let stack = Stack::connect().await;
-    let user = create_user(&stack, "user").await;
-    let (upstream_login, rs_login) = login(&stack, &user.username, "umami").await;
+    let user = stack.create_user("user").await;
+    let (upstream_login, rs_login) = stack.login(&user.username, "umami").await;
 
     let new_hash = bcrypt::hash("changed", 4).unwrap();
     for target in stack.targets() {
@@ -206,7 +160,7 @@ async fn unauthenticated_requests_match_upstream() {
 #[ignore = "requires the parity stack (parity/compose.yaml)"]
 async fn api_keys_match_upstream() {
     let stack = Stack::connect().await;
-    let user = create_user(&stack, "user").await;
+    let user = stack.create_user("user").await;
     let key_id = Uuid::new_v4();
     let key = format!("umami_{}", Uuid::new_v4().simple());
 
@@ -309,7 +263,7 @@ fn encrypt_totp_secret(secret: &str) -> String {
 #[ignore = "requires the parity stack (parity/compose.yaml)"]
 async fn two_factor_logins_issue_partial_tokens() {
     let stack = Stack::connect().await;
-    let user = create_user(&stack, "user").await;
+    let user = stack.create_user("user").await;
     // otplib requires at least 16 bytes; this is 20.
     let secret = encrypt_totp_secret("JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP");
 
@@ -326,7 +280,7 @@ async fn two_factor_logins_issue_partial_tokens() {
         .unwrap();
     }
 
-    let (upstream, rs) = login(&stack, &user.username, "umami").await;
+    let (upstream, rs) = stack.login(&user.username, "umami").await;
     assert_eq!(upstream.body["requiresTwoFactor"], true, "{upstream:?}");
     assert_same(&upstream, &rs, &["partialToken"], "2FA login");
 

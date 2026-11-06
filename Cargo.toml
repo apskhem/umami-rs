@@ -26,15 +26,18 @@ dotenvy = "0.15.7"
 fancy-regex = "0.20.0"
 getrandom = "0.4.3"
 hex = "0.4.3"
+hmac = "0.13.0"
 ipnet = "2.12.2"
 jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto"] }
 maxminddb = "0.32.0"
 mimalloc = "0.1.52"
 pbkdf2 = "0.13.0"
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
+sha1 = "0.11.0"
 sha2 = "0.11.1"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros"] }
 thiserror = "2.0.21"

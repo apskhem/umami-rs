@@ -27,6 +27,10 @@ pub enum AppError {
         code: &'static str,
         message: String,
     },
+    /// A response body given verbatim, for upstream responses outside the usual
+    /// envelope (such as 2FA lockouts, which add `lockedUntil`).
+    #[error("{status}")]
+    Custom { status: StatusCode, body: Value },
     /// Logged server-side; the client only sees a generic message.
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
@@ -49,6 +53,15 @@ impl AppError {
         }
     }
 
+    /// A coded error, as upstream's `badRequest({ code, message })` and friends.
+    pub fn coded(status: StatusCode, code: &'static str, message: &str) -> Self {
+        Self::Coded {
+            status,
+            code,
+            message: message.to_owned(),
+        }
+    }
+
     /// Upstream's `serverError('message')`: a 500 whose message is shown to the client.
     pub fn server_error_message(message: &str) -> Self {
         Self::Coded {
@@ -66,7 +79,7 @@ impl AppError {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
-            Self::Coded { status, .. } => *status,
+            Self::Coded { status, .. } | Self::Custom { status, .. } => *status,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -80,6 +93,7 @@ impl AppError {
             Self::PayloadTooLarge => "payload-too-large",
             Self::ServiceUnavailable => "service-unavailable",
             Self::Coded { code, .. } => code,
+            Self::Custom { .. } => "custom",
             Self::Internal(_) => "server-error",
         }
     }
@@ -95,6 +109,10 @@ impl AppError {
     /// The status and JSON body this error renders as. Internal errors are logged
     /// here, since their details are not sent to the client.
     pub fn into_parts(self) -> (StatusCode, Value) {
+        if let Self::Custom { status, body } = self {
+            return (status, body);
+        }
+
         let status = self.status();
         let message = match &self {
             Self::Internal(error) => {

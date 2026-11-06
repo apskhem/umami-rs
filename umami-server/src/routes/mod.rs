@@ -3,7 +3,7 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 
 use crate::collect;
 use crate::config::Config;
@@ -11,9 +11,11 @@ use crate::state::AppState;
 use crate::tracker::TrackerScript;
 
 mod auth;
+mod body;
 mod config;
 mod heartbeat;
 mod me;
+mod two_factor;
 
 /// Routes relative to `BASE_PATH`. API paths mirror upstream's `src/app/api/**/route.ts`.
 pub fn router(config: &Config) -> Router<AppState> {
@@ -25,6 +27,26 @@ pub fn router(config: &Config) -> Router<AppState> {
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/auth/sso", post(auth::sso))
         .route("/api/me", get(me::get))
+        .route("/api/me/password", post(me::change_password))
+        .route(
+            "/api/me/api-keys",
+            get(me::list_api_keys).post(me::create_api_key),
+        )
+        .route("/api/me/api-keys/{keyId}", delete(me::delete_api_key))
+        .route("/api/2fa/status", get(two_factor::status))
+        .route("/api/2fa/setup/initiate", post(two_factor::initiate))
+        .route("/api/2fa/setup/confirm", post(two_factor::confirm))
+        .route("/api/2fa/setup/cancel", post(two_factor::cancel))
+        .route("/api/2fa/disable", post(two_factor::disable))
+        .route("/api/2fa/verify", post(two_factor::verify))
+        .route("/api/admin/2fa/global", post(two_factor::set_global))
+        .route(
+            "/api/admin/users/{userId}/2fa",
+            get(two_factor::user_status)
+                .post(two_factor::set_user)
+                .delete(two_factor::reset_user),
+        )
+        .route("/api/admin/teams/{teamId}/2fa", post(two_factor::set_team))
         .route("/api/send", post(collect::send))
         .route("/api/batch", post(collect::batch));
 
