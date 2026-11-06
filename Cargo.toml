@@ -43,3 +43,12 @@ uuid = { version = "1.29.0", features = ["v4", "v5", "v7", "serde"] }
 
 # Dev-only
 http-body-util = "0.1.5"
+
+# Production builds (`cargo build --release` and the Docker image): maximum runtime
+# performance and smallest binary, at the cost of slower builds. `panic` stays
+# "unwind" so a panicking request handler fails that request, not the whole server.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
