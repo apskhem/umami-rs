@@ -263,6 +263,22 @@ pub fn session_token(user: &store::User, secret: &str) -> String {
     )
 }
 
+/// A session token for `user` that expires after `seconds`.
+pub fn expiring_session_token(user: &store::User, secret: &str, seconds: i64) -> String {
+    let now = Utc::now().timestamp();
+
+    jwt::sign_secure(
+        &json!({
+            "userId": user.user_id,
+            "role": user.role,
+            "pwd": crypto::hash(&[&user.password]),
+            "iat": now,
+            "exp": now + seconds,
+        }),
+        secret,
+    )
+}
+
 /// The short-lived token for completing a 2FA login.
 pub fn partial_token(user: &store::User, secret: &str) -> String {
     let now = Utc::now().timestamp();

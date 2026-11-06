@@ -74,12 +74,17 @@ policies under `/api/admin/**/2fa`) behave as upstream's.
 - Two-factor authentication needs `TWO_FACTOR_ENCRYPTION_KEY` and is compatible with
   upstream's stored secrets, backup codes, lockout (5 failures, 15 minutes) and
   replay protection.
-- Sessions are stateless: Redis-backed sessions (`REDIS_URL`) are not supported, so
-  `/api/auth/sso` fails as it does upstream without Redis.
+- Sessions are stateless: Redis-backed sessions (`REDIS_URL`) are not supported.
+  `/api/auth/sso` still works (upstream fails without Redis): it returns a session
+  token that expires after a day, which upstream also accepts. Without a session
+  store, logging out cannot revoke a token, as with upstream without Redis.
 
-Differences from upstream: the 2FA setup QR code is an SVG rather than a PNG (same
-code); a non-numeric 2FA code is rejected as invalid (upstream errors with 500); and
-malformed IDs in paths return 404 (upstream errors with 500).
+Differences from upstream: login returns the username as stored, not as typed;
+2FA codes from the adjacent 30-second steps are also accepted (RFC 6238's
+clock-drift tolerance; upstream accepts only the current step); the 2FA setup QR
+code is an SVG rather than a PNG (same code); a non-numeric 2FA code is rejected as
+invalid (upstream errors with 500); and malformed IDs in paths return 404
+(upstream errors with 500).
 
 ## Users, teams and websites
 

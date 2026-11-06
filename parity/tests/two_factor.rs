@@ -315,6 +315,48 @@ async fn setup_login_and_disable() {
 
 #[tokio::test]
 #[ignore = "requires the parity stack (parity/compose.yaml)"]
+async fn codes_tolerate_clock_drift() {
+    let _serial = SERIAL.lock().await;
+    let stack = Stack::connect().await;
+    let user = stack.create_user("user").await;
+    let secret = totp::generate_secret();
+    enable_directly(&stack, &user, &secret).await;
+    let partial = partial_tokens(&stack, &user).await;
+
+    // The previous step's code, as from a phone clock running 30 seconds slow:
+    // upstream accepts only the current step, umami-rs one step either side.
+    fresh_code(&secret).await;
+    let drifted = totp::code_at(&secret, now() - 30).unwrap();
+    let body = || Some(json!({ "token": drifted }));
+    let [u, r] = both(
+        &stack,
+        Method::POST,
+        "/api/2fa/verify",
+        &partial,
+        [body(), body()],
+    )
+    .await;
+    assert_eq!((u.status, r.status), (400, 200), "{u:?} {r:?}");
+    assert!(r.body["token"].is_string(), "{r:?}");
+
+    // Two steps off is still refused.
+    let partial = partial_tokens(&stack, &user).await;
+    let far = totp::code_at(&secret, now() - 60).unwrap();
+    let body = || Some(json!({ "token": far }));
+    let [u, r] = both(
+        &stack,
+        Method::POST,
+        "/api/2fa/verify",
+        &partial,
+        [body(), body()],
+    )
+    .await;
+    assert_eq!(u.status, 400, "{u:?}");
+    assert_same(&u, &r, &[], "a code two steps old");
+}
+
+#[tokio::test]
+#[ignore = "requires the parity stack (parity/compose.yaml)"]
 async fn wrong_codes_lock_the_user_out() {
     let _serial = SERIAL.lock().await;
     let stack = Stack::connect().await;

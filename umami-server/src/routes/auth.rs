@@ -49,12 +49,12 @@ pub async fn login(State(state): State<AppState>, body: Bytes) -> AppResult<Json
     let token = auth::session_token(&user, secret);
     let teams = store::user_teams(&state.db, user.user_id).await?;
 
-    // Upstream echoes the username as submitted, not as stored.
+    // Upstream echoes the username as submitted (`ADMIN`), not as stored.
     Ok(Json(json!({
         "token": token,
         "user": {
             "id": user.user_id,
-            "username": username,
+            "username": user.username,
             "role": user.role,
             "createdAt": user.created_at.map(js::date),
             "isAdmin": user.role == "admin",
@@ -80,10 +80,20 @@ pub async fn logout(_auth: Auth) -> Json<Value> {
     Json(json!({ "ok": true }))
 }
 
-/// `POST /api/auth/sso`: needs Redis-backed sessions upstream, which are not
-/// supported, so it fails as upstream does without Redis.
-pub async fn sso(_auth: Auth) -> AppError {
-    AppError::server_error_message("Redis is disabled")
+/// How long a token from `/api/auth/sso` lasts, as upstream's Redis sessions.
+const SSO_TOKEN_SECONDS: i64 = 24 * 60 * 60;
+
+/// `POST /api/auth/sso`: a fresh session token for the signed-in user, valid for
+/// a day. Upstream stores this session in Redis and fails without it; this
+/// token carries its own expiry, so no store is needed.
+pub async fn sso(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Value>> {
+    let user = auth.user()?;
+    let stored = store::user(&state.db, user.id)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+    let token = auth::expiring_session_token(&stored, &state.config.secret, SSO_TOKEN_SECONDS);
+
+    Ok(Json(json!({ "user": user, "token": token })))
 }
 
 fn two_factor_not_configured() -> AppError {

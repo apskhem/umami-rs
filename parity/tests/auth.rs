@@ -22,14 +22,19 @@ async fn login_matches_upstream() {
     let stack = Stack::connect().await;
     let user = stack.create_user("admin").await;
 
-    // The username is matched case-insensitively and echoed as submitted.
-    for username in [user.username.clone(), user.username.to_uppercase()] {
-        let (upstream, rs) = stack.login(&username, "umami").await;
+    let (upstream, rs) = stack.login(&user.username, "umami").await;
+    assert_eq!(upstream.status, 200, "{upstream:?}");
+    assert_same(&upstream, &rs, &["token"], "login");
 
-        assert_eq!(upstream.status, 200, "{upstream:?}");
-        assert_same(&upstream, &rs, &["token"], "login");
-        assert_eq!(upstream.body["user"]["username"], json!(username));
-    }
+    // Usernames match case-insensitively. Upstream echoes the username as typed;
+    // umami-rs returns it as stored.
+    let typed = user.username.to_uppercase();
+    let (upstream, rs) = stack.login(&typed, "umami").await;
+    assert_eq!(upstream.body["user"]["username"], json!(typed));
+    assert_eq!(rs.body["user"]["username"], json!(user.username));
+    let mut rs = rs;
+    rs.body["user"]["username"] = json!(typed);
+    assert_same(&upstream, &rs, &["token"], "login with another case");
 }
 
 #[tokio::test]
@@ -82,7 +87,6 @@ async fn session_tokens_are_interchangeable() {
             (Method::POST, "/api/auth/verify"),
             (Method::GET, "/api/me"),
             (Method::POST, "/api/auth/logout"),
-            (Method::POST, "/api/auth/sso"),
         ] {
             let (upstream, rs) = stack.call_both(method, path, &headers, None).await;
 
@@ -93,6 +97,43 @@ async fn session_tokens_are_interchangeable() {
             assert_same(&upstream, &rs, &[], path);
         }
     }
+}
+
+#[tokio::test]
+#[ignore = "requires the parity stack (parity/compose.yaml)"]
+async fn sso_issues_a_day_long_session() {
+    let stack = Stack::connect().await;
+    let user = stack.create_user("user").await;
+    let (_, rs_login) = stack.login(&user.username, "umami").await;
+    let auth = bearer(&token(&rs_login));
+    let headers = [("authorization", auth.as_str())];
+
+    // Upstream needs Redis for this and fails without it; umami-rs issues a
+    // self-contained token that both servers accept.
+    let (upstream, rs) = stack
+        .call_both(Method::POST, "/api/auth/sso", &headers, None)
+        .await;
+    assert_eq!(
+        (upstream.status, rs.status),
+        (500, 200),
+        "{upstream:?} {rs:?}"
+    );
+
+    let (_, me) = stack
+        .call_both(Method::GET, "/api/me", &headers, None)
+        .await;
+    assert_eq!(rs.body["user"], me.body["user"]);
+
+    let sso = bearer(rs.body["token"].as_str().unwrap());
+    let (upstream, rs) = stack
+        .call_both(Method::GET, "/api/me", &[("authorization", &sso)], None)
+        .await;
+    assert_eq!(upstream.status, 200, "{upstream:?}");
+    assert_same(&upstream, &rs, &["token"], "the sso token");
+
+    let claims: Value = jwt::verify_secure(sso.trim_start_matches("Bearer "), &secret()).unwrap();
+    let lifetime = claims["exp"].as_i64().unwrap() - claims["iat"].as_i64().unwrap();
+    assert_eq!(lifetime, 24 * 60 * 60, "{claims}");
 }
 
 #[tokio::test]

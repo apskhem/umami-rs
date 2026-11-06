@@ -81,7 +81,7 @@ async fn creating_users() {
         .await;
 
     // Each server stamped its own creation time.
-    let (u, r) = stack.login(&username, "long enough").await;
+    let (u, r) = stack.login(&username.to_lowercase(), "long enough").await;
     assert_eq!(u.status, 200, "{u:?}");
     assert_same_by(
         &u,
