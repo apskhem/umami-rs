@@ -43,6 +43,11 @@ impl Params {
         self.0.get(key).map(String::as_str)
     }
 
+    /// Every parameter, in no particular order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
     /// Validates the shared parameters (a 400 on failure) and returns them as
     /// list filters.
     pub fn filters(&self, schema: Schema) -> AppResult<Filters> {

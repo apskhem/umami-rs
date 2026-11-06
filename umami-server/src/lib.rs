@@ -1,5 +1,6 @@
 //! Headless, Umami-compatible analytics server.
 
+pub mod analytics;
 pub mod auth;
 pub mod collect;
 pub mod config;

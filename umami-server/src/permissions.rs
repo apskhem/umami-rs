@@ -259,6 +259,54 @@ pub async fn can_view_shared_website(
     Ok(share_token_includes(auth, website_id))
 }
 
+/// Upstream's `SHARE_SECTIONS`: parts of a website a share link may enable.
+const SHARE_SECTIONS: &[&str] = &[
+    "overview",
+    "events",
+    "sessions",
+    "realtime",
+    "performance",
+    "compare",
+    "breakdown",
+    "goals",
+    "funnels",
+    "journeys",
+    "retention",
+    "utm",
+    "revenue",
+    "attribution",
+];
+
+/// Upstream's `canViewWebsiteSection`: signed-in users by their own access;
+/// share links if they cover the website and enable one of `sections` (links
+/// that name no sections enable all of them).
+pub async fn can_view_website_section(
+    db: &PgPool,
+    auth: &Auth,
+    website_id: &str,
+    sections: &[&str],
+) -> AppResult<bool> {
+    if auth.user.is_some() {
+        return can_view_website(db, auth, website_id).await;
+    }
+    let Some(token) = &auth.share_token else {
+        return Ok(false);
+    };
+    if !share_token_includes(auth, website_id) {
+        return Ok(false);
+    }
+
+    let parameters = &token["parameters"];
+    let names_sections = SHARE_SECTIONS
+        .iter()
+        .any(|section| parameters[section].is_boolean());
+
+    Ok(!names_sections
+        || sections
+            .iter()
+            .any(|section| parameters[section] == serde_json::Value::Bool(true)))
+}
+
 pub fn can_view_all_websites(auth: &Auth) -> bool {
     is_admin(auth)
 }

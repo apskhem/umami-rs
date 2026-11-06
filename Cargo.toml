@@ -36,11 +36,12 @@ pbkdf2 = "0.13.0"
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 regex = "1.13.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+rust_decimal = { version = "1.43.0", default-features = false, features = ["std"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha1 = "0.11.0"
 sha2 = "0.11.1"
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "rust_decimal"] }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "signal"] }
 tower = "0.5.3"

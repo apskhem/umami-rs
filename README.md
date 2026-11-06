@@ -116,6 +116,29 @@ Differences from upstream, where upstream fails or leaves inconsistent data:
   exist, or a malformed ID) return 404 where upstream fails with a 500, and routes
   that need a signed-in user return 401 to share-link visitors.
 
+## Analytics
+
+The website dashboard's headline queries under `/api/websites/{id}`: `stats`,
+`pageviews`, `metrics` and `metrics/expanded` (every dimension, plus channels),
+`active`, `daterange` and `values`. They take upstream's parameters: the date range,
+`timezone`, `unit` and `compare`, column filters (`browser=neq.chrome`, `path=c./blog`,
+`match=any`), event- and session-data filters (`epf0`, `spf0`), segments, cohorts and
+`excludeBounce`. Share links see only the sections they enable. Results match
+upstream's for the same data, including its JSON types (sums are strings, as Prisma
+returns them).
+
+Differences from upstream:
+
+- Lists break ties in a fixed order (by value), which upstream leaves to the database.
+- `startDate`/`endDate` work as an alternative to `startAt`/`endAt` (upstream fails
+  with a 500), and `excludeBounce=false` does not exclude bounces (upstream treats any
+  value as true).
+- These return 400 where upstream fails with a 500: a negative `limit` or `offset`,
+  an unknown segment or cohort, a filter operator a column cannot use (`s.`, `gt.`),
+  or an invalid regex or date in a filter. A malformed website ID is a 404.
+- Time zones are those Postgres knows (upstream checks with JavaScript's `Intl`,
+  which also accepts offsets such as `+05:30`).
+
 ## Tracker script
 
 `/script.js` serves upstream's tracker exactly as the v3.4.1 release image ships it,

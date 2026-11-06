@@ -11,6 +11,7 @@ publish = false
 aes-gcm.workspace = true
 axum.workspace = true
 bcrypt.workspace = true
+chrono.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 reqwest.workspace = true

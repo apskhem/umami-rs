@@ -11,12 +11,13 @@ use crate::state::AppState;
 use crate::tracker::TrackerScript;
 
 mod admin;
+mod analytics;
 mod auth;
 mod body;
 mod config;
 mod heartbeat;
 mod me;
-mod params;
+pub(crate) mod params;
 mod teams;
 mod two_factor;
 mod users;
@@ -71,6 +72,22 @@ pub fn router(config: &Config) -> Router<AppState> {
                 .post(websites::update)
                 .delete(websites::delete),
         )
+        .route("/api/websites/{websiteId}/stats", get(analytics::stats))
+        .route(
+            "/api/websites/{websiteId}/pageviews",
+            get(analytics::pageviews),
+        )
+        .route("/api/websites/{websiteId}/metrics", get(analytics::metrics))
+        .route(
+            "/api/websites/{websiteId}/metrics/expanded",
+            get(analytics::expanded_metrics),
+        )
+        .route("/api/websites/{websiteId}/active", get(analytics::active))
+        .route(
+            "/api/websites/{websiteId}/daterange",
+            get(analytics::date_range),
+        )
+        .route("/api/websites/{websiteId}/values", get(analytics::values))
         .route("/api/websites/{websiteId}/reset", post(websites::reset))
         .route(
             "/api/websites/{websiteId}/transfer",
