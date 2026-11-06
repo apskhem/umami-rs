@@ -345,6 +345,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "crate-ua-rules"
+version = "0.1.0"
+dependencies = [
+ "fancy-regex",
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "crc"
 version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2465,6 +2475,7 @@ dependencies = [
  "base64 0.23.1",
  "bcrypt",
  "chrono",
+ "crate-ua-rules",
  "dotenvy",
  "fancy-regex",
  "getrandom 0.4.3",

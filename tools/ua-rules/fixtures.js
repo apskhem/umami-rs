@@ -1,4 +1,4 @@
-// Writes `umami-server/tests/fixtures/ua.json`: for a corpus of real user agents,
+// Writes `crate-ua-rules/tests/fixtures/ua.json`: for a corpus of real user agents,
 // what the JS libraries return. The Rust port is tested against these.
 //
 //   npm ci --ignore-scripts && npm run fixtures
@@ -13,7 +13,7 @@ const { browserName, detectOS } = require('detect-browser');
 const { UAParser } = require('ua-parser-js');
 const UAParserV1 = require('ua-parser-js-v1');
 
-const OUT = path.resolve(__dirname, '../../umami-server/tests/fixtures/ua.json');
+const OUT = path.resolve(__dirname, '../../crate-ua-rules/tests/fixtures/ua.json');
 
 // User-agent corpora: isbot's (Unlicense) and ua-parser-js's (MIT) test suites.
 const CORPORA = [

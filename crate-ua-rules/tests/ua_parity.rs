@@ -1,8 +1,8 @@
 //! Checks the user-agent port against what the JS libraries upstream Umami uses
 //! return for a corpus of real user agents (`tools/ua-rules/fixtures.js`).
 
+use crate_ua_rules as ua;
 use serde::Deserialize;
-use umami_server::collect::ua;
 
 #[derive(Deserialize)]
 struct Case {

@@ -1,0 +1,16 @@
+[package]
+name = "crate-ua-rules"
+description = "User-agent classification ported from detect-browser, isbot and ua-parser-js"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+fancy-regex.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true

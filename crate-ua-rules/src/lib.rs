@@ -1,15 +1,14 @@
-//! User-agent classification, matching upstream's use of `detect-browser`
+//! User-agent classification, matching upstream Umami's use of `detect-browser`
 //! (browser, OS), `isbot` (bots) and `ua-parser-js` (device type).
 //!
 //! The rule tables in `rules.rs` are generated from those libraries by
 //! `tools/ua-rules`; `tests/ua_parity.rs` checks the port against their output.
 
+mod js;
 #[rustfmt::skip]
 mod rules;
 
 use std::sync::LazyLock;
-
-use super::js;
 
 /// A JS regular expression translated to Rust syntax by `tools/ua-rules`.
 struct Pattern {

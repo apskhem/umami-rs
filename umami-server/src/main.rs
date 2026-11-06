@@ -52,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let geo = startup::open_geo_database(&config.collect)?;
-    umami_server::collect::ua::init();
+    crate_ua_rules::init();
 
     let state = AppState {
         db,

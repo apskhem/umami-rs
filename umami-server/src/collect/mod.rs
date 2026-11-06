@@ -9,7 +9,6 @@ mod page;
 mod payload;
 mod store;
 mod token;
-pub mod ua;
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -29,6 +28,7 @@ pub use self::token::CacheToken;
 use crate::crypto;
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
+use crate_ua_rules as ua;
 
 /// Upstream's `FIELD_LENGTH`.
 mod len {

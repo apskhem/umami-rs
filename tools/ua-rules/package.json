@@ -1,7 +1,7 @@
 {
   "name": "umami-rs-ua-rules",
   "private": true,
-  "description": "Generates umami-server's user-agent rule tables and parity fixtures from the JS libraries upstream Umami uses",
+  "description": "Generates crate-ua-rules' user-agent rule tables and parity fixtures from the JS libraries upstream Umami uses",
   "scripts": {
     "generate": "node generate.js",
     "fixtures": "node fixtures.js"

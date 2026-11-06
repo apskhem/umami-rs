@@ -439,7 +439,7 @@ async fn user_agents() {
     let stack = Stack::connect().await;
     let website = stack.website().await;
     let cases: Vec<UaCase> =
-        serde_json::from_str(include_str!("../../umami-server/tests/fixtures/ua.json")).unwrap();
+        serde_json::from_str(include_str!("../../crate-ua-rules/tests/fixtures/ua.json")).unwrap();
 
     let mut drift = Vec::new();
 

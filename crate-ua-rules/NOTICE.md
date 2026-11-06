@@ -1,6 +1,6 @@
 # Third-party notices
 
-`rules.rs` is generated from the following packages by `tools/ua-rules`.
+`src/rules.rs` is generated from the following packages by `tools/ua-rules`.
 
 ## detect-browser 5.3.0
 

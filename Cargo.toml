@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["parity", "umami-db", "umami-server"]
+members = ["crate-ua-rules", "parity", "umami-db", "umami-server"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +13,7 @@ license = "MIT"
 version = "3.4.1"
 
 [workspace.dependencies]
+crate-ua-rules = { path = "crate-ua-rules" }
 umami-db = { path = "umami-db" }
 umami-server = { path = "umami-server" }
 

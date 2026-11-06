@@ -1,4 +1,4 @@
-// Generates `umami-server/src/collect/ua/rules.rs` from the user-agent libraries
+// Generates `crate-ua-rules/src/rules.rs` from the user-agent libraries
 // upstream Umami uses, so the Rust port classifies browsers, operating systems,
 // devices and bots exactly as they do.
 //
@@ -14,7 +14,7 @@ const vm = require('node:vm');
 const { translate } = require('./translate');
 
 const ROOT = path.resolve(__dirname, '../..');
-const OUT_DIR = path.join(ROOT, 'umami-server/src/collect/ua');
+const CRATE_DIR = path.join(ROOT, 'crate-ua-rules');
 
 // Runs a CommonJS file in a sandbox after exposing its private variables on the global object.
 function loadPrivate(file, exposures) {
@@ -148,7 +148,7 @@ const license = (name, file) => fs.readFileSync(packageFile(name, file), 'utf8')
 
 const notice = `# Third-party notices
 
-\`rules.rs\` is generated from the following packages by \`tools/ua-rules\`.
+\`src/rules.rs\` is generated from the following packages by \`tools/ua-rules\`.
 
 ## detect-browser ${version('detect-browser')}
 
@@ -163,9 +163,8 @@ ${license('ua-parser-js-v1', 'license.md')}
 ${license('isbot', 'LICENSE')}
 `;
 
-fs.mkdirSync(OUT_DIR, { recursive: true });
-fs.writeFileSync(path.join(OUT_DIR, 'rules.rs'), output);
-fs.writeFileSync(path.join(OUT_DIR, 'NOTICE.md'), notice);
+fs.writeFileSync(path.join(CRATE_DIR, 'src/rules.rs'), output);
+fs.writeFileSync(path.join(CRATE_DIR, 'NOTICE.md'), notice);
 
 console.log(
   `browser=${detectBrowser.userAgentRules.length} os=${detectBrowser.operatingSystemRules.length} ` +
