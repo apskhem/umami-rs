@@ -6,12 +6,26 @@ use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 use umami_server::config::Config;
 use umami_server::state::AppState;
-use umami_server::{app, startup};
+use umami_server::{app, healthcheck, startup};
+
+// musl's allocator (used by the static Linux builds) is slow under concurrency.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Like upstream's `dotenv/config`: a missing `.env` is fine.
     let _ = dotenvy::dotenv();
+
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        let (host, port, base_path) = healthcheck::target_from_env();
+
+        if let Err(error) = healthcheck::check(&host, port, &base_path).await {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     tracing_subscriber::fmt()
         .with_env_filter(

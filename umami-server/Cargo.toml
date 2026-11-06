@@ -20,6 +20,7 @@ hex.workspace = true
 ipnet.workspace = true
 jsonwebtoken.workspace = true
 maxminddb.workspace = true
+mimalloc.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

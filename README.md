@@ -27,6 +27,18 @@ On startup the server checks the Postgres version and applies pending migrations
 upstream's `check-db` script does. A fresh database gets upstream's default login,
 `admin` / `umami`.
 
+### Docker
+
+The `Dockerfile` builds a static (musl) binary into a `scratch` image of about
+13 MB: no shell or libc, running as UID 65534, with `umami-server healthcheck` as
+its healthcheck. Mount a GeoLite2 database at `/app/geo` for geolocation, as with
+upstream's image.
+
+```sh
+docker build -t umami-rs .
+docker run -p 3000:3000 -e DATABASE_URL=... -e APP_SECRET=... umami-rs
+```
+
 ## Event collection
 
 `POST /api/send` and `POST /api/batch` accept the official tracker's payloads and

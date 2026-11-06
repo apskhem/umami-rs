@@ -220,7 +220,8 @@ fn parse_script_aliases(value: &str) -> Result<Vec<String>, ConfigError> {
     Ok(aliases)
 }
 
-fn normalize_base_path(raw: &str) -> String {
+/// `BASE_PATH` normalized to `""` or `/segment[/...]` with no trailing slash.
+pub fn normalize_base_path(raw: &str) -> String {
     let trimmed = raw.trim().trim_matches('/');
 
     if trimmed.is_empty() {

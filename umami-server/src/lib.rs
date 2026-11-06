@@ -4,6 +4,7 @@ pub mod collect;
 pub mod config;
 pub mod crypto;
 pub mod error;
+pub mod healthcheck;
 mod routes;
 pub mod startup;
 pub mod state;
