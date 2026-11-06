@@ -13,7 +13,8 @@ A headless Rust (axum + sqlx, Postgres) drop-in replacement for the **Umami v3.4
 ```sh
 docker compose up -d && cp .env.example .env   # local Postgres on :5432
 cargo run -p umami-server                      # migrates on startup; default login admin / umami
-cargo fmt && cargo clippy --all-targets
+cargo +nightly fmt                             # rustfmt.toml uses nightly-only options; stable fmt reverts them
+cargo clippy --all-targets
 
 cargo test                                     # unit + HTTP tests, no database needed
 cargo test -p umami-server --test http <name>  # one integration test file / filter

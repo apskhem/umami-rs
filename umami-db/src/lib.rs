@@ -9,8 +9,14 @@ mod check;
 mod connect;
 pub mod migrate;
 
-pub use check::{CheckError, check_server_version};
-pub use connect::{connect, connect_options};
+pub use check::{
+  CheckError,
+  check_server_version,
+};
+pub use connect::{
+  connect,
+  connect_options,
+};
 
 /// Upstream Umami release whose schema the vendored migrations reproduce.
 pub const UMAMI_VERSION: &str = "3.4.1";
