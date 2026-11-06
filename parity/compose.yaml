@@ -1,0 +1,117 @@
+# Upstream Umami and umami-rs side by side, for the parity tests in this crate.
+#
+#   docker compose -f parity/compose.yaml up -d --build --wait
+#   cargo test -p umami-parity -- --ignored
+#
+#   upstream            :3001  upstream 3.4.1 on database `upstream`
+#   rs                  :3002  umami-rs        on database `rs`
+#   upstream-on-rs-db   :3003  upstream 3.4.1 on database `rs` (migrated by umami-rs)
+#   rs-on-upstream-db   :3004  umami-rs        on database `upstream` (migrated by Prisma)
+#   postgres            :5433
+
+name: umami-parity
+
+x-common-env: &common-env
+  APP_SECRET: parity-secret
+  IGNORE_IP: 198.51.100.66
+  DISABLE_TELEMETRY: "1"
+  DISABLE_UPDATES: "1"
+
+x-upstream: &upstream
+  image: ghcr.io/umami-software/umami:3.4.1
+  healthcheck:
+    test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/heartbeat"]
+    interval: 5s
+    timeout: 3s
+    retries: 24
+
+x-rs: &rs
+  build:
+    context: ..
+  image: umami-rs:parity
+  volumes:
+    - geo:/app/geo:ro
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: umami
+      POSTGRES_PASSWORD: umami
+      POSTGRES_DB: umami
+    configs:
+      - source: create-databases
+        target: /docker-entrypoint-initdb.d/create-databases.sql
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U umami -d rs"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Copies upstream's GeoLite2 database into a volume, so both servers geolocate
+  # from the same file.
+  geo:
+    image: ghcr.io/umami-software/umami:3.4.1
+    user: root
+    entrypoint: ["cp", "/app/geo/GeoLite2-City.mmdb", "/geo/GeoLite2-City.mmdb"]
+    volumes:
+      - geo:/geo
+
+  upstream:
+    <<: *upstream
+    environment:
+      <<: *common-env
+      DATABASE_URL: postgresql://umami:umami@postgres:5432/upstream
+    ports:
+      - "3001:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  rs:
+    <<: *rs
+    environment:
+      <<: *common-env
+      DATABASE_URL: postgresql://umami:umami@postgres:5432/rs
+    ports:
+      - "3002:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      geo:
+        condition: service_completed_successfully
+
+  upstream-on-rs-db:
+    <<: *upstream
+    environment:
+      <<: *common-env
+      DATABASE_URL: postgresql://umami:umami@postgres:5432/rs
+    ports:
+      - "3003:3000"
+    depends_on:
+      rs:
+        condition: service_healthy
+
+  rs-on-upstream-db:
+    <<: *rs
+    environment:
+      <<: *common-env
+      DATABASE_URL: postgresql://umami:umami@postgres:5432/upstream
+    ports:
+      - "3004:3000"
+    depends_on:
+      upstream:
+        condition: service_healthy
+      geo:
+        condition: service_completed_successfully
+
+volumes:
+  geo:
+
+configs:
+  create-databases:
+    content: |
+      CREATE DATABASE upstream;
+      CREATE DATABASE rs;

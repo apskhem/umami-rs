@@ -10,6 +10,7 @@ databases, the official tracker script and the official dashboard work against i
 |---|---|
 | `umami-db` | Connection handling and the migrator. `migrations/` is a verbatim copy of upstream's Prisma migrations, applied with Prisma's `_prisma_migrations` bookkeeping so upstream and umami-rs can migrate the same database interchangeably. |
 | `umami-server` | The axum HTTP server (`umami-server` binary). |
+| `parity` | Differential tests that run upstream Umami and umami-rs side by side and compare their responses and database rows. |
 | `tools/tracker` | Fetches upstream's built tracker script (`umami-server/assets/script.js`) from its release image. |
 | `tools/ua-rules` | Generates the server's user-agent rule tables and parity fixtures from the JS libraries upstream uses. |
 
@@ -80,3 +81,22 @@ TEST_DATABASE_URL=postgresql://umami:umami@localhost:5432/umami \
   cargo test -- --include-ignored            # also run database tests
 ```
 
+### Parity with upstream
+
+`parity/compose.yaml` runs upstream's official 3.4.1 image and umami-rs (built from
+this repo) on one Postgres, each with its own database, plus each server on the
+database the other migrated. The parity tests send both the same requests and assert
+identical responses and rows, an identical schema, and that each server accepts the
+other's migrations:
+
+```sh
+docker compose -f parity/compose.yaml up -d --build --wait
+cargo test -p umami-parity -- --ignored
+docker compose -f parity/compose.yaml down -v
+```
+
+Known, intentional differences (not exercised by the parity tests): device types
+differ for under 1% of user agents (ua-parser-js 1.x vs 2.x); and in error cases
+umami-rs answers 400 rather than 500 for unparseable page URLs, ignores a cache token
+issued for another website, keeps impossible event-data dates as strings, and runs
+without a GeoLite2 database instead of failing.

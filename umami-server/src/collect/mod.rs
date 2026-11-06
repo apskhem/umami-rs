@@ -172,11 +172,8 @@ async fn collect(
         return Err(AppError::BadRequest("Website not found.".to_owned()));
     }
 
-    let user_agent = truthy(payload.user_agent.clone()).or_else(|| {
-        headers
-            .get(header::USER_AGENT)
-            .map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned())
-    });
+    let user_agent = truthy(payload.user_agent.clone())
+        .or_else(|| client::header_string(headers, header::USER_AGENT));
 
     if !settings.disable_bot_check && ua::is_bot(user_agent.as_deref().unwrap_or("")) {
         return Ok(json!({ "beep": "boop" }));

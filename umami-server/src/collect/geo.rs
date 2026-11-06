@@ -71,6 +71,8 @@ pub fn locate(
     }
 
     if use_headers {
+        // Upstream re-decodes these Latin-1 header strings as UTF-8 (`decodeHeader`),
+        // which is reading the raw bytes as UTF-8.
         let header = |name: &str| {
             headers
                 .get(name)

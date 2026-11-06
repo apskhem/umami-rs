@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["umami-db", "umami-server"]
+members = ["parity", "umami-db", "umami-server"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,6 +14,7 @@ version = "3.4.1"
 
 [workspace.dependencies]
 umami-db = { path = "umami-db" }
+umami-server = { path = "umami-server" }
 
 anyhow = "1.0.104"
 axum = "0.8.9"
@@ -25,6 +26,7 @@ ipnet = "2.12.2"
 jsonwebtoken = { version = "11.1.0", default-features = false, features = ["rust_crypto"] }
 maxminddb = "0.32.0"
 regex = "1.13.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha2 = "0.11.1"

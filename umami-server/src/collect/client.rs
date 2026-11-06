@@ -23,6 +23,21 @@ const IP_HEADERS: &[&str] = &[
     "x-forwarded",
 ];
 
+/// A header value as Node.js reads it: each byte becomes one character (Latin-1).
+/// Upstream hashes these strings, so non-ASCII bytes must decode the same way.
+pub fn header_string(
+    headers: &HeaderMap,
+    name: impl axum::http::header::AsHeaderName,
+) -> Option<String> {
+    headers.get(name).map(|value| {
+        value
+            .as_bytes()
+            .iter()
+            .map(|&byte| char::from(byte))
+            .collect()
+    })
+}
+
 /// Upstream's `getIpAddress(headers)`.
 ///
 /// Upstream runs behind Next.js, which fills in `x-forwarded-for` from the socket
@@ -32,12 +47,7 @@ pub fn client_ip(
     custom_header: Option<&str>,
     peer: Option<SocketAddr>,
 ) -> Option<String> {
-    let header = |name: &str| {
-        headers
-            .get(name)
-            .map(|value| String::from_utf8_lossy(value.as_bytes()).into_owned())
-            .filter(|value| !value.is_empty())
-    };
+    let header = |name: &str| header_string(headers, name).filter(|value| !value.is_empty());
 
     if let Some(name) = custom_header
         && let Some(value) = header(name)
@@ -263,6 +273,22 @@ mod tests {
         assert_eq!(
             client_ip(&headers(&[("x-client-ip", "203.0.113.7")]), None, peer),
             Some("198.51.100.9".into())
+        );
+    }
+
+    #[test]
+    fn decodes_headers_as_latin1_like_node() {
+        let headers: HeaderMap = [(
+            "user-agent".parse().unwrap(),
+            HeaderValue::from_bytes("Ù".as_bytes()).unwrap(),
+        )]
+        .into_iter()
+        .collect();
+
+        // UTF-8 bytes C3 99 read as two Latin-1 characters.
+        assert_eq!(
+            header_string(&headers, "user-agent").as_deref(),
+            Some("\u{c3}\u{99}")
         );
     }
 
