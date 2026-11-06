@@ -339,6 +339,10 @@ pub struct QueryFilters {
     pub exclude_bounce: bool,
     pub search: Option<String>,
     pub compare: Option<Compare>,
+    /// `pagingParams`, for lists.
+    pub page: Option<i64>,
+    pub page_size: Option<i64>,
+    pub max_results: Option<i64>,
     /// The segment and cohort to apply, resolved by [`QueryFilters::for_website`].
     segment: Option<Uuid>,
     cohort_id: Option<Uuid>,
@@ -390,6 +394,35 @@ pub struct Options {
     pub search: bool,
     /// `filterParams` (column filters, segments, cohorts and the like).
     pub filters: bool,
+    /// `pagingParams`.
+    pub paging: bool,
+    /// How the date range is given.
+    pub range: Range,
+    /// Whether `timezone` is required.
+    pub timezone_required: bool,
+}
+
+impl Options {
+    /// A date range only.
+    pub const NONE: Options = Options {
+        search: false,
+        filters: false,
+        paging: false,
+        range: Range::Dates,
+        timezone_required: false,
+    };
+}
+
+/// How a route takes its date range.
+#[derive(Clone, Copy, Default)]
+pub enum Range {
+    /// `withDateRange`: `startAt`/`endAt` timestamps or `startDate`/`endDate`.
+    #[default]
+    Dates,
+    /// Required integer `startAt`/`endAt` timestamps.
+    Timestamps,
+    /// Set by the route.
+    Fixed(DateTime<Utc>, DateTime<Utc>),
 }
 
 /// Upstream's `withDateRange` schema (with `filterParams` and `searchParams` as
@@ -417,17 +450,45 @@ pub async fn from_request(
             .map(|v| date::parse_date(v).ok_or_else(bad))
             .transpose()
     };
-    let (start_at, end_at) = (timestamp("startAt")?, timestamp("endAt")?);
-    let (start_date, end_date) = (date("startDate")?, date("endDate")?);
-    let (start_date, end_date) = match (start_at, end_at, start_date, end_date) {
-        (Some(start), Some(end), _, _) | (_, _, Some(start), Some(end)) => (start, end),
-        _ => return Err(bad()),
+    let integer = |key: &str| -> AppResult<DateTime<Utc>> {
+        let number = crate::collect::js::string_to_number(params.get(key).ok_or_else(bad)?);
+        if number.fract() != 0.0 {
+            return Err(bad());
+        }
+        date::from_js_millis(number).ok_or_else(bad)
+    };
+    let (start_date, end_date) = match options.range {
+        Range::Fixed(start, end) => (start, end),
+        Range::Timestamps => (integer("startAt")?, integer("endAt")?),
+        Range::Dates => {
+            let (start_at, end_at) = (timestamp("startAt")?, timestamp("endAt")?);
+            let (start_date, end_date) = (date("startDate")?, date("endDate")?);
+            match (start_at, end_at, start_date, end_date) {
+                (Some(start), Some(end), _, _) | (_, _, Some(start), Some(end)) => (start, end),
+                _ => return Err(bad()),
+            }
+        }
     };
 
     let timezone = match params.get("timezone") {
         Some(value) => Some(date::time_zone(db, value).await?.ok_or_else(bad)?),
+        None if options.timezone_required => return Err(bad()),
         None => None,
     };
+    let positive = |key: &str| -> AppResult<Option<i64>> {
+        if !options.paging {
+            return Ok(None);
+        }
+        params
+            .get(key)
+            .map(|value| zod::positive_int(value).ok_or_else(bad))
+            .transpose()
+    };
+    let (page, page_size, max_results) = (
+        positive("page")?,
+        positive("pageSize")?,
+        positive("maxResults")?,
+    );
     let unit = params
         .get("unit")
         .map(|value| Unit::parse(value).ok_or_else(bad))
@@ -453,6 +514,9 @@ pub async fn from_request(
             .then(|| params.get("search").map(str::to_owned))
             .flatten(),
         compare,
+        page,
+        page_size,
+        max_results,
         segment: None,
         cohort_id: None,
     };

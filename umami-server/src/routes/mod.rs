@@ -88,6 +88,40 @@ pub fn router(config: &Config) -> Router<AppState> {
             get(analytics::date_range),
         )
         .route("/api/websites/{websiteId}/values", get(analytics::values))
+        .route("/api/websites/{websiteId}/events", get(analytics::events))
+        .route(
+            "/api/websites/{websiteId}/events/series",
+            get(analytics::event_series),
+        )
+        .route(
+            "/api/websites/{websiteId}/events/stats",
+            get(analytics::event_stats),
+        )
+        .route(
+            "/api/websites/{websiteId}/sessions",
+            get(analytics::sessions),
+        )
+        .route(
+            "/api/websites/{websiteId}/sessions/stats",
+            get(analytics::session_stats),
+        )
+        .route(
+            "/api/websites/{websiteId}/sessions/weekly",
+            get(analytics::weekly),
+        )
+        .route(
+            "/api/websites/{websiteId}/sessions/{sessionId}",
+            get(analytics::session).delete(analytics::delete_session),
+        )
+        .route(
+            "/api/websites/{websiteId}/sessions/{sessionId}/activity",
+            get(analytics::session_activity),
+        )
+        .route(
+            "/api/websites/{websiteId}/sessions/{sessionId}/properties",
+            get(analytics::session_properties),
+        )
+        .route("/api/realtime/{websiteId}", get(analytics::realtime))
         .route("/api/websites/{websiteId}/reset", post(websites::reset))
         .route(
             "/api/websites/{websiteId}/transfer",

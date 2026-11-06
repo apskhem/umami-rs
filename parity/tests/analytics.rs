@@ -7,6 +7,7 @@
 //!
 //! Requires the stack in `parity/compose.yaml`; run with `cargo test -p umami-parity -- --ignored`.
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use chrono::{DateTime, Duration, DurationRound, Utc};
@@ -48,6 +49,9 @@ struct Dataset {
     segment: Uuid,
     cohort: Uuid,
     now: DateTime<Utc>,
+    /// The sessions, in order: 1 and 2 share an identity, 3 has two, and
+    /// 40-42 are active now.
+    sessions: Vec<Uuid>,
 }
 
 /// Seeds a website with 40 sessions over 45 days (a few active right now), with
@@ -104,8 +108,19 @@ async fn seed(stack: &Stack) -> Dataset {
     let languages = ["en-US", "de-DE", "th-TH", "ja-JP", "en-GB"];
 
     let mut first_visits = Vec::new();
+    let mut sessions = Vec::new();
+    // Every event gets its own instant, so time-ordered lists have no ties
+    // (which upstream orders arbitrarily).
+    let mut used = HashSet::new();
+    let mut unique = |mut at: DateTime<Utc>| {
+        while !used.insert(at) {
+            at += Duration::seconds(1);
+        }
+        at
+    };
     for s in 0..43 {
         let session = Uuid::new_v4();
+        sessions.push(session);
         // Sessions 40-42 are active right now.
         let start = if s >= 40 {
             now - Duration::minutes(2 + s as i64 - 40)
@@ -114,6 +129,27 @@ async fn seed(stack: &Stack) -> Dataset {
         };
         let (country, region, city) = places[rng.next(places.len())];
         let distinct = (s % 6 == 0).then(|| format!("user-{s}"));
+        let hostname = if rng.next(3) == 0 {
+            "www.example.com"
+        } else {
+            "example.com"
+        };
+        // Identities: each identified session's own, one shared by sessions 1
+        // and 2, and two for session 3.
+        let links: Vec<String> = match s {
+            1 | 2 => vec!["shared".into()],
+            3 => vec!["first".into(), "second".into()],
+            _ => distinct.iter().cloned().collect(),
+        };
+        for (n, link) in links.iter().enumerate() {
+            writeln!(
+                sql,
+                "insert into session_link (website_id, session_id, distinct_id, created_at) \
+                 values ('{website}', '{session}', '{link}', {});",
+                sql_time(start + Duration::minutes(n as i64)),
+            )
+            .unwrap();
+        }
         writeln!(
             sql,
             "insert into session (session_id, website_id, browser, os, device, screen, language, country, region, city, distinct_id, created_at) \
@@ -144,14 +180,9 @@ async fn seed(stack: &Stack) -> Dataset {
                 at = start;
             }
             if v == 0 {
-                first_visits.push((session, visit, at));
+                first_visits.push((session, visit, at, hostname));
             }
             let (domain, referrer_path, query) = referrers[rng.next(referrers.len())];
-            let hostname = if rng.next(3) == 0 {
-                "www.example.com"
-            } else {
-                "example.com"
-            };
 
             for e in 0..(1 + (s + v) % 4) {
                 let path = paths[rng.next(paths.len())];
@@ -170,7 +201,7 @@ async fn seed(stack: &Stack) -> Dataset {
                     "insert into website_event (event_id, website_id, session_id, visit_id, created_at, url_path, url_query, referrer_path, referrer_query, referrer_domain, page_title, event_type, hostname, utm_source, utm_medium, gclid) \
                      values ('{}', '{website}', '{session}', '{visit}', {}, '{path}', '{query}', '{referrer_path}', '', '{domain}', {}, 1, '{hostname}', {}, {}, {});",
                     Uuid::new_v4(),
-                    sql_time(at),
+                    sql_time(unique(at)),
                     sql_text(Some(rng.pick(&titles))),
                     sql_text(utm("utm_source")),
                     sql_text(utm("utm_medium")),
@@ -191,7 +222,7 @@ async fn seed(stack: &Stack) -> Dataset {
                     sql,
                     "insert into website_event (event_id, website_id, session_id, visit_id, created_at, url_path, url_query, referrer_domain, event_type, event_name, tag, hostname) \
                      values ('{event}', '{website}', '{session}', '{visit}', {}, '/pricing', '', '', 2, '{name}', {}, '{hostname}');",
-                    sql_time(at),
+                    sql_time(unique(at)),
                     sql_text((s % 2 == 0).then_some("campaign")),
                 )
                 .unwrap();
@@ -217,7 +248,7 @@ async fn seed(stack: &Stack) -> Dataset {
                     "insert into website_event (event_id, website_id, session_id, visit_id, created_at, url_path, url_query, event_type, hostname, lcp, fcp) \
                      values ('{}', '{website}', '{session}', '{visit}', {}, '/', '', 5, '{hostname}', 1234.5, 456);",
                     Uuid::new_v4(),
-                    sql_time(at),
+                    sql_time(unique(at)),
                 )
                 .unwrap();
             }
@@ -226,13 +257,13 @@ async fn seed(stack: &Stack) -> Dataset {
 
     // `/top{k}` is viewed by k sessions, so its visitor counts are distinct.
     for k in 1..=5 {
-        for (session, visit, at) in first_visits.iter().take(k) {
+        for (session, visit, at, hostname) in first_visits.iter().take(k) {
             writeln!(
                 sql,
                 "insert into website_event (event_id, website_id, session_id, visit_id, created_at, url_path, url_query, referrer_domain, event_type, hostname) \
-                 values ('{}', '{website}', '{session}', '{visit}', {}, '/top{k}', '', '', 1, 'example.com');",
+                 values ('{}', '{website}', '{session}', '{visit}', {}, '/top{k}', '', '', 1, '{hostname}');",
                 Uuid::new_v4(),
-                sql_time(*at + Duration::seconds(k as i64)),
+                sql_time(unique(*at + Duration::seconds(k as i64))),
             )
             .unwrap();
         }
@@ -250,6 +281,7 @@ async fn seed(stack: &Stack) -> Dataset {
         segment,
         cohort,
         now,
+        sessions,
     }
 }
 
@@ -699,4 +731,253 @@ async fn upstream_server_errors() {
     assert_eq!(u.body["bounces"], 0, "{u:?}");
     let plain = rs(format!("{base}/stats?{range}")).await;
     assert_eq!(r.body, plain.body);
+}
+
+#[tokio::test]
+#[ignore = "requires the parity stack (parity/compose.yaml)"]
+async fn events_match_upstream() {
+    let stack = Stack::connect().await;
+    let data = seed(&stack).await;
+    let (_, admin) = stack.session("admin").await;
+    let base = format!("/api/websites/{}", data.website);
+    let all = range(&data, 45);
+    let week = range(&data, 7);
+
+    for query in [
+        all.clone(),
+        format!("{all}&page=2&pageSize=7"),
+        format!("{all}&pageSize=500"),
+        format!("{all}&maxResults=10"),
+        format!("{all}&search=pricing"),
+        format!("{all}&search=SIGN"),
+        format!("{week}&browser=chrome&path=c./blog"),
+        format!("{all}&eventType=2"),
+        format!("{all}&epf0=1.eq.plan.pro"),
+        format!("{all}&cohort={}", data.cohort),
+    ] {
+        for path in [
+            format!("{base}/events?{query}"),
+            format!("{base}/events/stats?{query}"),
+            format!("{base}/events/stats?{query}&compare=yoy"),
+        ] {
+            let response = compare(&stack, &admin, &path).await;
+            assert_eq!(response.status, 200, "{path}: {response:?}");
+        }
+    }
+
+    // The list's own order matters: pages must line up exactly.
+    let path = format!("{base}/events?{all}&page=3&pageSize=10");
+    let (u, r) = stack.call_as(&admin, Method::GET, &path, None).await;
+    assert_eq!(u.body["data"].as_array().unwrap().len(), 10, "{u:?}");
+    assert_same(&u, &r, &[], &path);
+
+    for query in [
+        format!("{all}&timezone=UTC"),
+        format!("{all}&timezone=Asia/Tokyo&unit=day"),
+        format!("{week}&timezone=America/New_York&unit=hour&limit=1"),
+        format!("{all}&timezone=UTC&limit=0"),
+        format!("{all}&timezone=UTC&browser=firefox"),
+    ] {
+        let path = format!("{base}/events/series?{query}");
+        let response = compare(&stack, &admin, &path).await;
+        assert_eq!(response.status, 200, "{path}: {response:?}");
+    }
+
+    for path in [
+        // The series needs integer timestamps and a time zone.
+        format!("{base}/events/series?{all}"),
+        format!("{base}/events/series?startAt=1.5&endAt=2&timezone=UTC"),
+        format!("{base}/events/series?startDate=2026-01-01&endDate=2026-02-01&timezone=UTC"),
+        format!("{base}/events?{all}&page=0"),
+    ] {
+        let (u, r) = stack.call_as(&admin, Method::GET, &path, None).await;
+        assert_eq!(u.status, 400, "{path}: {u:?}");
+        assert_same(&u, &r, &[], &path);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the parity stack (parity/compose.yaml)"]
+async fn sessions_match_upstream() {
+    let stack = Stack::connect().await;
+    let data = seed(&stack).await;
+    let (_, admin) = stack.session("admin").await;
+    let base = format!("/api/websites/{}", data.website);
+    let all = range(&data, 45);
+
+    for query in [
+        all.clone(),
+        format!("{all}&page=2&pageSize=10"),
+        format!("{all}&maxResults=5"),
+        format!("{all}&search=user"),
+        format!("{all}&search=CHROME"),
+        format!("{all}&country=DE"),
+        format!("{all}&path=/pricing&match=any&browser=safari"),
+        format!("{all}&segment={}", data.segment),
+    ] {
+        for path in [
+            format!("{base}/sessions?{query}"),
+            format!("{base}/sessions/stats?{query}"),
+            format!("{base}/sessions/weekly?{query}&timezone=Asia/Bangkok"),
+        ] {
+            let (u, r) = stack.call_as(&admin, Method::GET, &path, None).await;
+            assert_eq!(u.status, 200, "{path}: {u:?}");
+            assert_same(&u, &r, &[], &path);
+        }
+    }
+
+    let (u, _) = stack
+        .call_as(&admin, Method::GET, &format!("{base}/sessions?{all}"), None)
+        .await;
+    assert_eq!(u.body["count"], 43, "{u:?}");
+
+    // Session details: plain, identified, sharing an identity, with two.
+    let sessions = &data.sessions;
+    for session in [
+        sessions[5],
+        sessions[6],
+        sessions[1],
+        sessions[3],
+        sessions[40],
+    ] {
+        let session_base = format!("{base}/sessions/{session}");
+        for path in [
+            session_base.clone(),
+            format!("{session_base}/properties"),
+            format!("{session_base}/activity?{all}"),
+            format!("{session_base}/activity?{}", range(&data, 1)),
+            format!("{session_base}/activity?{all}&distinctId=shared"),
+        ] {
+            let (u, r) = stack.call_as(&admin, Method::GET, &path, None).await;
+            assert_eq!(u.status, 200, "{path}: {u:?}");
+            assert_same(&u, &r, &[], &path);
+        }
+    }
+
+    let stitched = |session: Uuid| {
+        let path = format!("{base}/sessions/{session}");
+        let admin = admin.clone();
+        let stack = &stack;
+        async move { stack.call_as(&admin, Method::GET, &path, None).await.0.body }
+    };
+    let shared = stitched(sessions[1]).await;
+    assert_eq!(shared["stitchedSessionCount"], 2, "{shared}");
+    assert_eq!(shared["distinctId"], "shared");
+    let collided = stitched(sessions[3]).await;
+    assert!(collided.get("distinctId").is_none(), "{collided}");
+    assert_eq!(collided["distinctIds"], json!(["first", "second"]));
+
+    for (path, status) in [
+        (format!("{base}/sessions/{}", Uuid::new_v4()), 404),
+        (format!("{base}/sessions/stats?{all}&startAt=1.5"), 400),
+        (format!("{base}/sessions/weekly?{all}"), 400),
+        (format!("{base}/sessions/{}/activity", sessions[0]), 400),
+        (
+            format!(
+                "{base}/sessions/{}/activity?{all}&distinctId={}",
+                sessions[0],
+                "x".repeat(51)
+            ),
+            400,
+        ),
+    ] {
+        let (u, r) = stack.call_as(&admin, Method::GET, &path, None).await;
+        assert_eq!(u.status, status, "{path}: {u:?}");
+        assert_same(&u, &r, &[], &path);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the parity stack (parity/compose.yaml)"]
+async fn realtime_matches_upstream() {
+    let stack = Stack::connect().await;
+    let data = seed(&stack).await;
+    let (_, admin) = stack.session("admin").await;
+
+    for query in ["", "?timezone=Asia/Tokyo", "?unit=hour", "?browser=chrome"] {
+        let path = format!("/api/realtime/{}{query}", data.website);
+        let (mut u, mut r) = stack.call_as(&admin, Method::GET, &path, None).await;
+        assert_eq!(u.status, 200, "{path}: {u:?}");
+        for response in [&mut u, &mut r] {
+            response.body["timestamp"] = json!(0);
+        }
+        assert_same(&u, &r, &[], &path);
+    }
+
+    let path = format!("/api/realtime/{}", data.website);
+    let (u, _) = stack.call_as(&admin, Method::GET, &path, None).await;
+    // The three sessions active now, one per country.
+    assert_eq!(u.body["totals"]["countries"], 3, "{u:?}");
+}
+
+#[tokio::test]
+#[ignore = "requires the parity stack (parity/compose.yaml)"]
+async fn deleting_sessions_matches_upstream() {
+    let stack = Stack::connect().await;
+    let data = seed(&stack).await;
+    let (_, admin) = stack.session("admin").await;
+    let (_, outsider) = stack.session("user").await;
+    let session = data.sessions[0];
+    let path = format!("/api/websites/{}/sessions/{session}", data.website);
+
+    for (tokens, status) in [(&outsider, 401), (&admin, 200), (&admin, 404)] {
+        let (u, r) = stack.call_as(tokens, Method::DELETE, &path, None).await;
+        assert_eq!(u.status, status, "{u:?}");
+        assert_same(&u, &r, &[], "delete session");
+    }
+
+    for sql in [
+        "select count(*) from session where session_id = any($1)",
+        "select count(*) from website_event where session_id = any($1)",
+        "select count(*) from session_data where session_id = any($1)",
+        "select count(*) from session_link where session_id = any($1)",
+        "select count(*) from event_data where website_event_id in \
+           (select event_id from website_event where session_id = any($1))",
+    ] {
+        let rows = stack
+            .assert_same_snapshot(sql, &[session], "after deleting a session")
+            .await;
+        assert_eq!(rows, json!([{ "count": 0 }]), "{sql}");
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the parity stack (parity/compose.yaml)"]
+async fn upstream_session_and_event_quirks() {
+    let stack = Stack::connect().await;
+    let data = seed(&stack).await;
+    let (_, admin) = stack.session("admin").await;
+    let base = format!("/api/websites/{}", data.website);
+    let all = range(&data, 45);
+
+    // A session seen on two hostnames: listed twice upstream, once here.
+    let session = data.sessions[7];
+    stack
+        .execute(
+            "insert into website_event (event_id, website_id, session_id, visit_id, created_at, url_path, url_query, event_type, hostname) \
+             select gen_random_uuid(), website_id, session_id, visit_id, created_at + interval '1 second', '/other', '', 1, 'other.example.com' \
+             from website_event where session_id = $1[1] order by created_at limit 1",
+            &[session],
+        )
+        .await;
+    let path = format!("{base}/sessions?{all}&pageSize=100");
+    let (u, r) = stack.call_as(&admin, Method::GET, &path, None).await;
+    let listed = |body: &Value| {
+        body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["id"] == json!(session))
+            .count()
+    };
+    assert_eq!((listed(&u.body), listed(&r.body)), (2, 1));
+    assert_eq!(
+        (u.body["count"].as_i64(), r.body["count"].as_i64()),
+        (Some(44), Some(43))
+    );
+
+    // A negative series limit: a 500 upstream, a 400 here.
+    let path = format!("{base}/events/series?{all}&timezone=UTC&limit=-1");
+    let (u, r) = stack.call_as(&admin, Method::GET, &path, None).await;
+    assert_eq!((u.status, r.status), (500, 400), "{u:?} {r:?}");
 }

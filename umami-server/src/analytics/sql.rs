@@ -112,6 +112,67 @@ pub async fn row(db: &PgPool, sql: &str, bindings: &Bindings) -> AppResult<Value
         .unwrap_or(Value::Null))
 }
 
+/// Upstream's `DEFAULT_PAGE_SIZE`.
+const DEFAULT_PAGE_SIZE: i64 = 20;
+
+/// The requested page's size and offset.
+pub fn page_window(filters: &QueryFilters) -> (i64, i64) {
+    let size = filters.page_size.unwrap_or(DEFAULT_PAGE_SIZE);
+    let offset = size.saturating_mul(filters.page.unwrap_or(1) - 1);
+    (size, offset)
+}
+
+/// Upstream's paged result: `{ data, count, page, pageSize, isCapped }`. With
+/// `maxResults`, counting stops there and `isCapped` says whether it was reached.
+pub fn page(data: Vec<Value>, count: i64, filters: &QueryFilters) -> Value {
+    json!({
+        "data": data,
+        "count": count,
+        "page": filters.page.unwrap_or(1),
+        "pageSize": page_window(filters).0,
+        "isCapped": filters.max_results.is_some_and(|max| count >= max),
+    })
+}
+
+/// The number of rows `query` returns, up to `maxResults` if given.
+pub async fn count(
+    db: &PgPool,
+    query: &str,
+    bindings: &Bindings,
+    filters: &QueryFilters,
+) -> AppResult<i64> {
+    let sql = match filters.max_results {
+        Some(max) => {
+            format!("select count(*) as num from (select 1 from ({query}) t limit {max}) t2")
+        }
+        None => format!("select count(*) as num from ({query}) t"),
+    };
+
+    Ok(row(db, &sql, bindings).await?["num"]
+        .as_i64()
+        .unwrap_or_default())
+}
+
+/// Upstream's `pagedRawQuery`, ordered by `order` (a trusted SQL fragment).
+pub async fn paged(
+    db: &PgPool,
+    query: &str,
+    bindings: &Bindings,
+    filters: &QueryFilters,
+    order: &str,
+) -> AppResult<Value> {
+    let count = count(db, query, bindings, filters).await?;
+    let (size, offset) = page_window(filters);
+    let data = rows(
+        db,
+        &format!("{query}\norder by {order}\nlimit {size} offset {offset}"),
+        bindings,
+    )
+    .await?;
+
+    Ok(page(data, count, filters))
+}
+
 /// Errors caused by the request's values (a bad regex or date in a filter) are a
 /// 400; upstream fails with a 500.
 fn database_error(error: sqlx::Error) -> AppError {

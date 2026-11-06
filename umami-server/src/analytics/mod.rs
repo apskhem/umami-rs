@@ -5,6 +5,9 @@
 //! fixed order, which upstream leaves to the database.
 
 pub mod date;
+pub mod events;
 pub mod filters;
 pub mod queries;
+pub mod realtime;
+pub mod sessions;
 pub mod sql;

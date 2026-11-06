@@ -118,9 +118,11 @@ Differences from upstream, where upstream fails or leaves inconsistent data:
 
 ## Analytics
 
-The website dashboard's headline queries under `/api/websites/{id}`: `stats`,
-`pageviews`, `metrics` and `metrics/expanded` (every dimension, plus channels),
-`active`, `daterange` and `values`. They take upstream's parameters: the date range,
+The website dashboard's queries under `/api/websites/{id}`: `stats`, `pageviews`,
+`metrics` and `metrics/expanded` (every dimension, plus channels), `active`,
+`daterange` and `values`; `events` (list, `series`, `stats`); `sessions` (list,
+`stats`, `weekly`, and each session with its `activity` and `properties`, or
+`DELETE` to remove it); and `/api/realtime/{id}`. They take upstream's parameters: the date range,
 `timezone`, `unit` and `compare`, column filters (`browser=neq.chrome`, `path=c./blog`,
 `match=any`), event- and session-data filters (`epf0`, `spf0`), segments, cohorts and
 `excludeBounce`. Share links see only the sections they enable. Results match
@@ -129,11 +131,15 @@ returns them).
 
 Differences from upstream:
 
-- Lists break ties in a fixed order (by value), which upstream leaves to the database.
+- Lists break ties in a fixed order (by value, or event ID for events at the same
+  instant), which upstream leaves to the database, so pages never overlap.
+- The sessions list has one row per session, with its latest hostname; upstream
+  lists (and counts) a session once per hostname it was seen on.
 - `startDate`/`endDate` work as an alternative to `startAt`/`endAt` (upstream fails
   with a 500), and `excludeBounce=false` does not exclude bounces (upstream treats any
   value as true).
-- These return 400 where upstream fails with a 500: a negative `limit` or `offset`,
+- These return 400 where upstream fails with a 500: a negative `limit` or `offset`
+  (on metrics and event series),
   an unknown segment or cohort, a filter operator a column cannot use (`s.`, `gt.`),
   or an invalid regex or date in a filter. A malformed website ID is a 404.
 - Time zones are those Postgres knows (upstream checks with JavaScript's `Intl`,
