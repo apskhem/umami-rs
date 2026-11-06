@@ -22,6 +22,10 @@ pub struct Schema {
   pub sorting: bool,
 }
 
+pub const PAGING: Schema = Schema {
+  search: false,
+  sorting: false,
+};
 pub const PAGING_SORTING: Schema = Schema {
   search: false,
   sorting: true,

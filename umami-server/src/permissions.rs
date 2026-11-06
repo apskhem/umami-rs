@@ -170,19 +170,28 @@ pub fn can_view_all_teams(auth: &Auth) -> bool {
 
 // Websites
 
-/// The owner of a website, link, pixel or board (upstream's `getEntity`).
-struct Entity {
-  user_id: Option<Uuid>,
-  team_id: Option<Uuid>,
+/// Upstream's `ENTITY_TYPE`: what a share link shares.
+pub const ENTITY_WEBSITE: i32 = 1;
+pub const ENTITY_LINK: i32 = 2;
+pub const ENTITY_PIXEL: i32 = 3;
+pub const ENTITY_BOARD: i32 = 4;
+
+/// A website, link, pixel or board and its owner (upstream's `getEntity`).
+pub struct Entity {
+  /// Its [`ENTITY_WEBSITE`]-style type.
+  pub kind: i32,
+  pub user_id: Option<Uuid>,
+  pub team_id: Option<Uuid>,
 }
 
-async fn entity(db: &PgPool, entity_id: &str) -> AppResult<Option<Entity>> {
+pub async fn entity(db: &PgPool, entity_id: &str) -> AppResult<Option<Entity>> {
   let id = db_id(entity_id)?;
   // `getWebsite` skips IDs zod rejects; the other lookups query them anyway.
   let check_websites = crate::zod::uuid(entity_id).is_some();
 
-  let owner: Option<(Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
-    "select user_id, team_id from ( \
+  // The branches are numbered by `ENTITY_TYPE`, in upstream's lookup order.
+  let owner: Option<(i32, Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
+    "select n, user_id, team_id from ( \
            select 1 as n, user_id, team_id from website where $2 and website_id = $1 \
            union all select 2, user_id, team_id from link where link_id = $1 \
            union all select 3, user_id, team_id from pixel where pixel_id = $1 \
@@ -194,7 +203,7 @@ async fn entity(db: &PgPool, entity_id: &str) -> AppResult<Option<Entity>> {
   .fetch_optional(db)
   .await?;
 
-  Ok(owner.map(|(user_id, team_id)| Entity { user_id, team_id }))
+  Ok(owner.map(|(kind, user_id, team_id)| Entity { kind, user_id, team_id }))
 }
 
 /// Whether the share token covers the website (or link or pixel).
@@ -245,6 +254,30 @@ pub async fn can_view_shared_website(db: &PgPool, auth: &Auth, website_id: &str)
   }
 
   Ok(share_token_includes(auth, website_id))
+}
+
+/// Upstream's `canViewSharedWebsiteFilters`: signed-in users by their own access,
+/// share links if they cover the website and do not disable filters.
+pub async fn can_view_shared_website_filters(db: &PgPool, auth: &Auth, website_id: &str) -> AppResult<bool> {
+  if auth.user.is_some() {
+    return can_view_website(db, auth, website_id).await;
+  }
+
+  let allows_filters = auth
+    .share_token
+    .as_ref()
+    .is_some_and(|token| token["parameters"]["allowFilter"] != serde_json::Value::Bool(false));
+
+  Ok(allows_filters && share_token_includes(auth, website_id))
+}
+
+/// Upstream's `canViewAuthenticatedWebsite`: signed-in users only.
+pub async fn can_view_authenticated_website(db: &PgPool, auth: &Auth, website_id: &str) -> AppResult<bool> {
+  if auth.user.is_none() {
+    return Ok(false);
+  }
+
+  can_view_website(db, auth, website_id).await
 }
 
 /// Upstream's `SHARE_SECTIONS`: parts of a website a share link may enable.
@@ -373,6 +406,34 @@ pub async fn can_transfer_website_to_team(
 
   if website.user_id == Some(user.id) {
     return team_permits(db, team_id, user.id, WEBSITE_TRANSFER_TO_TEAM).await;
+  }
+
+  Ok(false)
+}
+
+// Entities (the targets of share links)
+
+/// Upstream's `canViewEntity` (no `permission`), `canUpdateEntity`
+/// (`website:update`) and `canDeleteEntity` (`website:delete`): admins, the
+/// owner, or team members whose role grants `permission`. Share links have no
+/// access.
+pub async fn can_access_entity(db: &PgPool, auth: &Auth, entity_id: &str, permission: Option<&str>) -> AppResult<bool> {
+  let Some(user) = &auth.user else {
+    return Ok(false);
+  };
+  if user.is_admin {
+    return Ok(true);
+  }
+  let Some(entity) = entity(db, entity_id).await? else {
+    return Ok(false);
+  };
+
+  if let Some(owner) = entity.user_id {
+    return Ok(owner == user.id);
+  }
+  if let Some(team_id) = entity.team_id {
+    let member = team::team_user(db, team_id, user.id).await?;
+    return Ok(member.is_some_and(|member| permission.is_none_or(|p| has_permission(&member.role, p))));
   }
 
   Ok(false)

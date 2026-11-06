@@ -5,6 +5,8 @@
 //! that leaves upstream refusing a delete or keeping orphaned rows, the delete
 //! functions here remove everything that belongs to what is deleted instead.
 
+pub mod segment;
+pub mod share;
 pub mod team;
 pub mod user;
 pub mod website;

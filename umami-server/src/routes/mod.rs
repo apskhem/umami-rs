@@ -35,6 +35,8 @@ mod config;
 mod heartbeat;
 mod me;
 pub(crate) mod params;
+mod segments;
+mod shares;
 mod teams;
 mod two_factor;
 mod users;
@@ -114,6 +116,24 @@ pub fn router(config: &Config) -> Router<AppState> {
     )
     .route("/api/realtime/{websiteId}", get(analytics::realtime))
     .route("/api/websites/{websiteId}/reset", post(websites::reset))
+    .route(
+      "/api/websites/{websiteId}/shares",
+      get(shares::website_list).post(shares::website_create),
+    )
+    .route(
+      "/api/websites/{websiteId}/segments",
+      get(segments::list).post(segments::create),
+    )
+    .route(
+      "/api/websites/{websiteId}/segments/{segmentId}",
+      get(segments::get).post(segments::update).delete(segments::delete),
+    )
+    .route("/api/share", post(shares::create))
+    .route("/api/share/{slug}", get(shares::resolve))
+    .route(
+      "/api/share/id/{shareId}",
+      get(shares::get).post(shares::update).delete(shares::delete),
+    )
     .route("/api/websites/{websiteId}/transfer", post(websites::transfer))
     .route("/api/admin/users", get(admin::users))
     .route("/api/admin/teams", get(admin::teams))

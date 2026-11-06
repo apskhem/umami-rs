@@ -322,3 +322,100 @@ async fn tracker_script_posts_to_collect_endpoint() {
 
   assert_eq!(body, Value::String(TRACKER.replace("/api/send", "/collect")));
 }
+
+fn unauthorized() -> Value {
+  json!({ "error": { "message": "Unauthorized", "code": "unauthorized", "status": 401 } })
+}
+
+#[tokio::test]
+async fn share_and_segment_routes_validate_before_auth() {
+  let segments = format!("/api/websites/{WEBSITE}/segments");
+  let shares = format!("/api/websites/{WEBSITE}/shares");
+  let share = format!("/api/share/id/{WEBSITE}");
+  let segment = json!({ "type": "segment", "name": "n", "parameters": {} });
+
+  for (uri, body) in [
+    (
+      "/api/share",
+      json!({ "entityId": "x", "shareType": 1, "name": "n", "parameters": {} }),
+    ),
+    (
+      "/api/share",
+      json!({ "entityId": WEBSITE, "shareType": "web", "name": "n", "parameters": {} }),
+    ),
+    (
+      "/api/share",
+      json!({ "entityId": WEBSITE, "shareType": 1, "name": "n" }),
+    ),
+    (
+      "/api/share",
+      json!({ "entityId": WEBSITE, "shareType": 1, "name": "n", "slug": null, "parameters": {} }),
+    ),
+    (&share, json!({ "name": "n", "parameters": {} })),
+    (
+      &share,
+      json!({ "name": "n", "slug": "s".repeat(101), "parameters": {} }),
+    ),
+    (&shares, json!({ "name": "n".repeat(201) })),
+    (&shares, json!({ "name": "n", "parameters": [] })),
+    (&segments, json!({ "type": "group", "name": "n", "parameters": {} })),
+    (&segments, json!({ "type": "segment", "name": "n" })),
+  ] {
+    assert_eq!(
+      post(state(""), uri, &[], body.clone()).await,
+      (StatusCode::BAD_REQUEST, bad_request()),
+      "{uri} {body}"
+    );
+  }
+  for uri in [
+    format!("{segments}?search=x"),
+    format!("{segments}?type=x"),
+    format!("{shares}?segment=x"),
+  ] {
+    assert_eq!(
+      get(state(""), &uri).await,
+      (StatusCode::BAD_REQUEST, bad_request()),
+      "{uri}"
+    );
+  }
+
+  let (status, body) = post(
+    state(""),
+    &segments,
+    &[],
+    json!({ "type": "cohort", "name": "n", "parameters": {
+        "sessionPropertyFilters": [{ "propertyName": "p", "dataType": 1, "operator": "eq", "value": "v" }],
+    } }),
+  )
+  .await;
+  assert_eq!(status, StatusCode::BAD_REQUEST);
+  assert_eq!(
+    body["error"]["message"],
+    "Session property filters are only supported for segments."
+  );
+
+  // Valid requests without credentials never reach the database.
+  for (uri, body) in [
+    (
+      "/api/share",
+      json!({ "entityId": WEBSITE, "shareType": "1", "name": "n", "parameters": {} }),
+    ),
+    (share.as_str(), json!({ "name": "n", "slug": "s", "parameters": {} })),
+    (shares.as_str(), json!({ "name": "n" })),
+    (segments.as_str(), segment.clone()),
+    (&format!("{segments}/{WEBSITE}"), segment.clone()),
+  ] {
+    assert_eq!(
+      post(state(""), uri, &[], body).await,
+      (StatusCode::UNAUTHORIZED, unauthorized()),
+      "{uri}"
+    );
+  }
+  for uri in [format!("{segments}?type=cohort"), shares.clone(), share.clone()] {
+    assert_eq!(
+      get(state(""), &uri).await,
+      (StatusCode::UNAUTHORIZED, unauthorized()),
+      "{uri}"
+    );
+  }
+}

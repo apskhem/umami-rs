@@ -116,6 +116,31 @@ Differences from upstream, where upstream fails or leaves inconsistent data:
   exist, or a malformed ID) return 404 where upstream fails with a 500, and routes
   that need a signed-in user return 401 to share-link visitors.
 
+## Share links and segments
+
+Share links (`/api/websites/{id}/shares`, `/api/share`, `/api/share/id/{shareId}`)
+are created, listed, updated and deleted as upstream's, for websites, links, pixels
+and boards. Opening one (`GET /api/share/{slug}`, no sign-in) returns what it shares
+and a share token in upstream's format, so tokens from either server work on both.
+A board's link shares the websites, pixels and links on the board that its owner
+may share. Saved segments and cohorts (`/api/websites/{id}/segments` and
+`/api/websites/{id}/segments/{segmentId}`) are stored as upstream stores them (only
+the known parameters), and share links can read them unless they disable filters.
+
+Differences from upstream:
+
+- **Taken slugs** return 400 where upstream fails with a 500.
+- **Shares that could never be opened** are refused: a share of an entity that
+  does not exist (404) or whose `shareType` is not the entity's type (400).
+  Upstream stores both. Likewise, admins cannot save a segment, or create a website
+  share, for a website that does not exist (404).
+- **Missing records** (a share or segment that does not exist, or a malformed ID)
+  return 404 where upstream fails with a 500.
+- **The segment list** is oldest first, ties broken by ID; upstream leaves it
+  unordered. As upstream, it ignores paging parameters and returns the first 20.
+- **White labels** are not attached to opened share links: upstream keeps them only
+  in Redis, which umami-rs does not use (as upstream without Redis).
+
 ## Analytics
 
 The website dashboard's queries under `/api/websites/{id}`: `stats`, `pageviews`,

@@ -74,7 +74,7 @@ pub struct AuthUser {
 }
 
 impl AuthUser {
-  fn new(user: store::User) -> Self {
+  pub fn new(user: store::User) -> Self {
     Self {
       is_admin: user.role == "admin",
       id: user.user_id,
