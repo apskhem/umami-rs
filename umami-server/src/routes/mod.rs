@@ -10,12 +10,21 @@ use crate::config::Config;
 use crate::state::AppState;
 use crate::tracker::TrackerScript;
 
+mod auth;
+mod config;
 mod heartbeat;
+mod me;
 
 /// Routes relative to `BASE_PATH`. API paths mirror upstream's `src/app/api/**/route.ts`.
 pub fn router(config: &Config) -> Router<AppState> {
     let mut router = Router::new()
         .route("/api/heartbeat", get(heartbeat::get))
+        .route("/api/config", get(config::get))
+        .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/verify", post(auth::verify))
+        .route("/api/auth/logout", post(auth::logout))
+        .route("/api/auth/sso", post(auth::sso))
+        .route("/api/me", get(me::get))
         .route("/api/send", post(collect::send))
         .route("/api/batch", post(collect::batch));
 

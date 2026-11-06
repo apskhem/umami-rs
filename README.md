@@ -62,6 +62,19 @@ To update the user-agent rules after an upstream bump, change the versions in
 cd tools/ua-rules && npm ci --ignore-scripts && npm run generate && npm run fixtures
 ```
 
+## Authentication
+
+`POST /api/auth/login`, `/verify`, `/logout` and `/sso`, `GET /api/me` and
+`GET /api/config` behave as upstream's. Session tokens use upstream's format
+(an encrypted JWT keyed by `APP_SECRET`, bound to the password), so a token issued
+by either server is accepted by the other, and changing a password signs the user
+out of both. API keys (`Bearer umami_...`) and share tokens are accepted as upstream
+accepts them. Sessions are stateless: Redis-backed sessions (`REDIS_URL`) are not
+supported, so `/api/auth/sso` fails as it does upstream without Redis.
+
+Not yet implemented: completing a two-factor login (`/api/2fa/*`), managing API
+keys and changing passwords.
+
 ## Tracker script
 
 `/script.js` serves upstream's tracker exactly as the v3.4.1 release image ships it,

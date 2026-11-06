@@ -16,6 +16,9 @@ use uuid::Uuid;
 /// The `APP_SECRET` both servers run with (see `compose.yaml`).
 pub const APP_SECRET: &str = "parity-secret";
 
+/// The `TWO_FACTOR_ENCRYPTION_KEY` both servers run with (see `compose.yaml`).
+pub const TWO_FACTOR_KEY: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
 /// A server under test and its database.
 pub struct Target {
     pub name: &'static str,
@@ -177,12 +180,26 @@ impl Stack {
         headers: &[(&str, &str)],
         body: &Value,
     ) -> Response {
-        let mut request = self
-            .http
-            .post(format!("{}{path}", target.url))
-            .header("content-type", "application/json")
-            .body(body.to_string());
+        self.call(target, reqwest::Method::POST, path, headers, Some(body))
+            .await
+    }
 
+    /// Sends a request to one server.
+    pub async fn call(
+        &self,
+        target: &Target,
+        method: reqwest::Method,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<&Value>,
+    ) -> Response {
+        let mut request = self.http.request(method, format!("{}{path}", target.url));
+
+        if let Some(body) = body {
+            request = request
+                .header("content-type", "application/json")
+                .body(body.to_string());
+        }
         for (name, value) in headers {
             request = request.header(*name, *value);
         }
@@ -193,6 +210,26 @@ impl Stack {
         let body = serde_json::from_str(&text).unwrap_or(Value::String(text));
 
         Response { status, body }
+    }
+
+    /// Sends the same request to both servers; returns (upstream, rs).
+    pub async fn call_both(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<&Value>,
+    ) -> (Response, Response) {
+        (
+            self.call(&self.upstream, method.clone(), path, headers, body)
+                .await,
+            self.call(&self.rs, method, path, headers, body).await,
+        )
+    }
+
+    /// Both servers, for setting up identical data in each database.
+    pub fn targets(&self) -> [&Target; 2] {
+        [&self.upstream, &self.rs]
     }
 
     /// Sends the same request to both servers (upstream first, then umami-rs) and
@@ -230,6 +267,42 @@ impl Stack {
             problems.join("\n")
         );
     }
+}
+
+/// Asserts two responses have the same status and body, ignoring the given
+/// top-level body fields (for example a freshly minted token).
+pub fn assert_same(upstream: &Response, rs: &Response, ignore: &[&str], context: &str) {
+    let strip = |body: &Value| {
+        let mut body = body.clone();
+        if let Some(object) = body.as_object_mut() {
+            for key in ignore {
+                object.remove(*key);
+            }
+        }
+        body
+    };
+
+    assert_eq!(
+        upstream.status, rs.status,
+        "{context}: status differs\nupstream: {upstream:?}\nrs: {rs:?}"
+    );
+
+    // Upstream adds zod's error tree to validation errors; the envelope must match.
+    if let Some(error) = upstream.body.get("error").filter(|e| e.is_object()) {
+        for field in ["message", "code", "status"] {
+            assert_eq!(
+                error[field], rs.body["error"][field],
+                "{context}: error.{field} differs\nupstream: {upstream:?}\nrs: {rs:?}"
+            );
+        }
+        return;
+    }
+
+    assert_eq!(
+        strip(&upstream.body),
+        strip(&rs.body),
+        "{context}: body differs"
+    );
 }
 
 /// Claims of a cache token, minus its issue time (which depends on when each server

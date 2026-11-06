@@ -1,8 +1,9 @@
 //! The `x-umami-cache` token: an HS256 JWT signed with the app secret, compatible
 //! with upstream's `createToken` / `parseToken` (node `jsonwebtoken`).
 
-use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
+
+use crate::jwt;
 
 const CACHE_TOKEN_TYPE: &str = "cache";
 
@@ -44,34 +45,14 @@ impl CacheToken {
     }
 
     pub fn sign(&self, secret: &str) -> String {
-        jsonwebtoken::encode(
-            &Header::new(Algorithm::HS256),
-            self,
-            &EncodingKey::from_secret(secret.as_bytes()),
-        )
-        .expect("serializing a cache token cannot fail")
+        jwt::sign(self, secret)
     }
 
     /// Verifies a token and returns it if it is a cache token; `None` otherwise,
     /// like upstream (which ignores any invalid token).
     pub fn parse(token: &str, secret: &str) -> Option<Self> {
-        // node `jsonwebtoken` defaults for an HMAC secret: HS256/384/512, `exp` and
-        // `nbf` checked only if present.
-        let mut validation = Validation::new(Algorithm::HS256);
-        validation.algorithms = vec![Algorithm::HS256, Algorithm::HS384, Algorithm::HS512];
-        validation.required_spec_claims.clear();
-        validation.validate_exp = true;
-        validation.validate_nbf = true;
-        validation.leeway = 0;
-
-        jsonwebtoken::decode::<Self>(
-            token,
-            &DecodingKey::from_secret(secret.as_bytes()),
-            &validation,
-        )
-        .ok()
-        .map(|data| data.claims)
-        .filter(|claims| claims.kind.as_deref() == Some(CACHE_TOKEN_TYPE))
+        jwt::verify::<Self>(token, secret)
+            .filter(|claims| claims.kind.as_deref() == Some(CACHE_TOKEN_TYPE))
     }
 }
 

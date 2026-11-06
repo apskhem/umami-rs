@@ -1,10 +1,13 @@
 //! Headless, Umami-compatible analytics server.
 
+pub mod auth;
 pub mod collect;
 pub mod config;
 pub mod crypto;
 pub mod error;
 pub mod healthcheck;
+pub mod json;
+pub mod jwt;
 mod routes;
 pub mod startup;
 pub mod state;

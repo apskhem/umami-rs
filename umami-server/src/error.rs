@@ -19,6 +19,14 @@ pub enum AppError {
     PayloadTooLarge,
     #[error("Service unavailable")]
     ServiceUnavailable,
+    /// An error with its own code and message, like upstream's
+    /// `unauthorized({ code: 'incorrect-username-password' })`.
+    #[error("{message}")]
+    Coded {
+        status: StatusCode,
+        code: &'static str,
+        message: String,
+    },
     /// Logged server-side; the client only sees a generic message.
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
@@ -32,6 +40,24 @@ impl AppError {
         Self::BadRequest("Bad request".to_owned())
     }
 
+    /// A 401 with a specific code and upstream's default message.
+    pub fn unauthorized_code(code: &'static str) -> Self {
+        Self::Coded {
+            status: StatusCode::UNAUTHORIZED,
+            code,
+            message: "Unauthorized".to_owned(),
+        }
+    }
+
+    /// Upstream's `serverError('message')`: a 500 whose message is shown to the client.
+    pub fn server_error_message(message: &str) -> Self {
+        Self::Coded {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "server-error",
+            message: message.to_owned(),
+        }
+    }
+
     pub fn status(&self) -> StatusCode {
         match self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
@@ -40,6 +66,7 @@ impl AppError {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Coded { status, .. } => *status,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -52,6 +79,7 @@ impl AppError {
             Self::NotFound => "not-found",
             Self::PayloadTooLarge => "payload-too-large",
             Self::ServiceUnavailable => "service-unavailable",
+            Self::Coded { code, .. } => code,
             Self::Internal(_) => "server-error",
         }
     }

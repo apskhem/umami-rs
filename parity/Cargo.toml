@@ -8,7 +8,11 @@ license.workspace = true
 publish = false
 
 [dependencies]
+aes-gcm.workspace = true
 axum.workspace = true
+bcrypt.workspace = true
+getrandom.workspace = true
+hex.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

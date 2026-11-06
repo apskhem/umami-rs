@@ -31,7 +31,30 @@ pub struct Config {
     pub cors_max_age: String,
     /// `TRACKER_SCRIPT_NAME`: comma-separated extra paths that serve `/script.js`.
     pub tracker_script_aliases: Vec<String>,
+    /// `TWO_FACTOR_ENCRYPTION_KEY` (64 hex characters): encrypts TOTP secrets. As
+    /// upstream, an invalid key means 2FA is not configured rather than an error.
+    pub two_factor_key: Option<[u8; 32]>,
     pub collect: CollectConfig,
+    pub public: PublicConfig,
+}
+
+/// Settings the dashboard reads from `GET /api/config`.
+#[derive(Clone, Debug, Default)]
+pub struct PublicConfig {
+    /// `FAVICON_URL`
+    pub favicon_url: Option<String>,
+    /// `LINKS_URL`
+    pub links_url: Option<String>,
+    /// `PIXELS_URL`
+    pub pixels_url: Option<String>,
+    /// `PRIVATE_MODE`
+    pub private_mode: bool,
+    /// `DISABLE_TELEMETRY`
+    pub telemetry_disabled: bool,
+    /// `DISABLE_UPDATES`
+    pub updates_disabled: bool,
+    /// `TRACKER_SCRIPT_NAME`, as given.
+    pub tracker_script_name: Option<String>,
 }
 
 /// Settings for event collection (`/api/send`).
@@ -153,6 +176,19 @@ impl Config {
             skip_db_migration: get("SKIP_DB_MIGRATION").is_some(),
             cors_max_age: get("CORS_MAX_AGE").unwrap_or_else(|| "86400".to_owned()),
             tracker_script_aliases,
+            two_factor_key: get("TWO_FACTOR_ENCRYPTION_KEY").and_then(|key| {
+                let bytes = hex::decode(&key).ok()?;
+                bytes.try_into().ok()
+            }),
+            public: PublicConfig {
+                favicon_url: get("FAVICON_URL"),
+                links_url: get("LINKS_URL"),
+                pixels_url: get("PIXELS_URL"),
+                private_mode: get("PRIVATE_MODE").is_some(),
+                telemetry_disabled: get("DISABLE_TELEMETRY").is_some(),
+                updates_disabled: get("DISABLE_UPDATES").is_some(),
+                tracker_script_name: get("TRACKER_SCRIPT_NAME"),
+            },
             collect,
             database_url,
         })
@@ -182,6 +218,8 @@ impl fmt::Debug for Config {
             .field("skip_db_migration", &self.skip_db_migration)
             .field("cors_max_age", &self.cors_max_age)
             .field("tracker_script_aliases", &self.tracker_script_aliases)
+            .field("two_factor_key", &self.two_factor_key.map(|_| "<redacted>"))
+            .field("public", &self.public)
             .field("collect", &self.collect)
             .finish()
     }
@@ -344,6 +382,19 @@ mod tests {
         );
         assert!(!collect.geo_database_explicit);
         assert_eq!(config.cors_max_age, "86400");
+    }
+
+    #[test]
+    fn two_factor_key_must_be_256_bits_of_hex() {
+        let key = |value: &str| {
+            config(&[("DATABASE_URL", "x"), ("TWO_FACTOR_ENCRYPTION_KEY", value)])
+                .unwrap()
+                .two_factor_key
+        };
+
+        assert_eq!(key(&"ab".repeat(32)), Some([0xab; 32]));
+        assert_eq!(key(&"ab".repeat(31)), None);
+        assert_eq!(key(&"zz".repeat(32)), None);
     }
 
     #[test]
