@@ -10,6 +10,7 @@ databases, the official tracker script and the official dashboard work against i
 |---|---|
 | `umami-db` | Connection handling and the migrator. `migrations/` is a verbatim copy of upstream's Prisma migrations, applied with Prisma's `_prisma_migrations` bookkeeping so upstream and umami-rs can migrate the same database interchangeably. |
 | `umami-server` | The axum HTTP server (`umami-server` binary). |
+| `tools/tracker` | Fetches upstream's built tracker script (`umami-server/assets/script.js`) from its release image. |
 | `tools/ua-rules` | Generates the server's user-agent rule tables and parity fixtures from the JS libraries upstream uses. |
 
 ## Running
@@ -48,6 +49,24 @@ To update the user-agent rules after an upstream bump, change the versions in
 cd tools/ua-rules && npm ci --ignore-scripts && npm run generate && npm run fixtures
 ```
 
+## Tracker script
+
+`/script.js` serves upstream's tracker exactly as the v3.4.1 release image ships it,
+with the same caching and CORS headers; `TRACKER_SCRIPT_NAME` adds alias paths and
+`COLLECT_API_ENDPOINT` re-points the script, as upstream does at startup. Embed it
+as with upstream:
+
+```html
+<script defer src="https://analytics.example.com/script.js" data-website-id="..."></script>
+```
+
+To track a newer upstream release, run `python3 tools/tracker/fetch.py <version>`
+and update `SCRIPT_SHA256` in `umami-server/src/tracker.rs`.
+
+Not supported: `TRACKER_SCRIPT_URL` (proxying the script from elsewhere),
+`COLLECT_API_HOST` (a build-time option upstream; use `data-host-url` instead) and
+the session-replay `recorder.js`.
+
 ## Configuration
 
 Environment variables follow upstream where an equivalent exists; see `.env.example`.
@@ -60,3 +79,4 @@ cargo test                                   # unit + HTTP tests, no database ne
 TEST_DATABASE_URL=postgresql://umami:umami@localhost:5432/umami \
   cargo test -- --include-ignored            # also run database tests
 ```
+

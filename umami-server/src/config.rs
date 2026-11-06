@@ -29,6 +29,8 @@ pub struct Config {
     pub skip_db_migration: bool,
     /// `CORS_MAX_AGE` (default `86400`): `Access-Control-Max-Age` for API responses.
     pub cors_max_age: String,
+    /// `TRACKER_SCRIPT_NAME`: comma-separated extra paths that serve `/script.js`.
+    pub tracker_script_aliases: Vec<String>,
     pub collect: CollectConfig,
 }
 
@@ -127,6 +129,20 @@ impl Config {
             use_uuidv7: get("USE_UUIDV7").is_some(),
         };
 
+        let tracker_script_aliases = match get("TRACKER_SCRIPT_NAME") {
+            Some(value) => parse_script_aliases(&value)?,
+            None => Vec::new(),
+        };
+
+        if let Some(endpoint) = &collect.endpoint_alias
+            && (endpoint == "/script.js" || tracker_script_aliases.contains(endpoint))
+        {
+            return Err(ConfigError::Invalid {
+                name: "COLLECT_API_ENDPOINT",
+                value: endpoint.clone(),
+            });
+        }
+
         Ok(Self {
             direct_database_url: get("DIRECT_DATABASE_URL"),
             secret,
@@ -136,6 +152,7 @@ impl Config {
             skip_db_check: get("SKIP_DB_CHECK").is_some(),
             skip_db_migration: get("SKIP_DB_MIGRATION").is_some(),
             cors_max_age: get("CORS_MAX_AGE").unwrap_or_else(|| "86400".to_owned()),
+            tracker_script_aliases,
             collect,
             database_url,
         })
@@ -164,9 +181,43 @@ impl fmt::Debug for Config {
             .field("skip_db_check", &self.skip_db_check)
             .field("skip_db_migration", &self.skip_db_migration)
             .field("cors_max_age", &self.cors_max_age)
+            .field("tracker_script_aliases", &self.tracker_script_aliases)
             .field("collect", &self.collect)
             .finish()
     }
+}
+
+/// Upstream's `TRACKER_SCRIPT_NAME` handling: each name becomes `/<name>` (leading
+/// slashes trimmed). Names that are not plain paths, or that would shadow
+/// `/script.js` or the API, are rejected.
+fn parse_script_aliases(value: &str) -> Result<Vec<String>, ConfigError> {
+    let mut aliases: Vec<String> = Vec::new();
+
+    for name in value
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        let path = format!("/{}", name.trim_start_matches('/'));
+        let valid = path.len() > 1
+            && !path.starts_with("/api/")
+            && path != "/script.js"
+            && path
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/._-~".contains(c));
+
+        if !valid {
+            return Err(ConfigError::Invalid {
+                name: "TRACKER_SCRIPT_NAME",
+                value: name.to_owned(),
+            });
+        }
+        if !aliases.contains(&path) {
+            aliases.push(path);
+        }
+    }
+
+    Ok(aliases)
 }
 
 fn normalize_base_path(raw: &str) -> String {
@@ -292,6 +343,30 @@ mod tests {
         );
         assert!(!collect.geo_database_explicit);
         assert_eq!(config.cors_max_age, "86400");
+    }
+
+    #[test]
+    fn tracker_script_aliases() {
+        let config = config(&[
+            ("DATABASE_URL", "x"),
+            ("TRACKER_SCRIPT_NAME", "umami.js, /js/t.js,umami.js,"),
+        ])
+        .unwrap();
+
+        assert_eq!(config.tracker_script_aliases, ["/umami.js", "/js/t.js"]);
+
+        for bad in ["script.js", "api/send", "a b.js", "{x}.js", "/"] {
+            assert!(
+                matches!(
+                    super::parse_script_aliases(bad),
+                    Err(ConfigError::Invalid {
+                        name: "TRACKER_SCRIPT_NAME",
+                        ..
+                    })
+                ),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

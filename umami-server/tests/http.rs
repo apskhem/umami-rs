@@ -57,10 +57,12 @@ async fn request(state: AppState, request: Request<Body>) -> (StatusCode, Header
     let status = response.status();
     let headers = response.headers().clone();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    // JSON responses are parsed; anything else (the tracker script) is kept as text.
     let body = if bytes.is_empty() {
         Value::Null
     } else {
-        serde_json::from_slice(&bytes).unwrap()
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
     };
 
     (status, headers, body)
@@ -295,5 +297,93 @@ async fn collect_endpoint_alias_serves_send() {
     assert_eq!(
         post(state(""), "/c", &[], json!({})).await.0,
         StatusCode::NOT_FOUND
+    );
+}
+
+const TRACKER: &str = include_str!("../assets/script.js");
+
+async fn get_script(
+    state: AppState,
+    uri: &str,
+    headers: &[(&str, &str)],
+) -> (StatusCode, HeaderMap, Value) {
+    let mut builder = Request::get(uri);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+
+    request(state, builder.body(Body::empty()).unwrap()).await
+}
+
+#[tokio::test]
+async fn serves_the_tracker_script() {
+    let (status, headers, body) = get_script(state(""), "/script.js", &[]).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, Value::String(TRACKER.to_owned()));
+    assert_eq!(
+        headers["content-type"],
+        "application/javascript; charset=utf-8"
+    );
+    assert_eq!(headers["access-control-allow-origin"], "*");
+    assert_eq!(
+        headers["cache-control"],
+        "public, max-age=86400, must-revalidate"
+    );
+
+    // Revalidation with the ETag gets an empty 304.
+    let etag = headers["etag"].to_str().unwrap().to_owned();
+    let (status, headers, body) =
+        get_script(state(""), "/script.js", &[("if-none-match", &etag)]).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert_eq!(headers["etag"], etag.as_str());
+    assert_eq!(body, Value::Null);
+
+    let (status, _, _) =
+        get_script(state(""), "/script.js", &[("if-none-match", "\"stale\"")]).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn tracker_script_follows_base_path_and_aliases() {
+    let state = || {
+        state_with(&[
+            ("BASE_PATH", "/analytics"),
+            ("TRACKER_SCRIPT_NAME", "umami.js,/js/t.js"),
+        ])
+    };
+
+    for path in [
+        "/analytics/script.js",
+        "/analytics/umami.js",
+        "/analytics/js/t.js",
+    ] {
+        let (status, _, body) = get_script(state(), path, &[]).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert_eq!(body, Value::String(TRACKER.to_owned()), "{path}");
+    }
+
+    assert_eq!(
+        get_script(state(), "/script.js", &[]).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get_script(state_with(&[]), "/umami.js", &[]).await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn tracker_script_posts_to_collect_endpoint() {
+    let (_, _, body) = get_script(
+        state_with(&[("COLLECT_API_ENDPOINT", "/collect")]),
+        "/script.js",
+        &[],
+    )
+    .await;
+
+    assert_eq!(
+        body,
+        Value::String(TRACKER.replace("/api/send", "/collect"))
     );
 }

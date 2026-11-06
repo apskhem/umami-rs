@@ -7,6 +7,7 @@ pub mod error;
 mod routes;
 pub mod startup;
 pub mod state;
+pub mod tracker;
 
 use axum::Router;
 use axum::middleware;

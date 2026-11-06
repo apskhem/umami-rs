@@ -1,6 +1,6 @@
 use axum::Router;
 use axum::extract::{Request, State};
-use axum::http::{HeaderName, HeaderValue, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -8,22 +8,34 @@ use axum::routing::{get, post};
 use crate::collect;
 use crate::config::Config;
 use crate::state::AppState;
+use crate::tracker::TrackerScript;
 
 mod heartbeat;
 
-/// API routes, relative to `BASE_PATH`. Paths mirror upstream's `src/app/api/**/route.ts`.
+/// Routes relative to `BASE_PATH`. API paths mirror upstream's `src/app/api/**/route.ts`.
 pub fn router(config: &Config) -> Router<AppState> {
-    let router = Router::new()
+    let mut router = Router::new()
         .route("/api/heartbeat", get(heartbeat::get))
         .route("/api/send", post(collect::send))
         .route("/api/batch", post(collect::batch));
 
-    match config.collect.endpoint_alias.as_deref() {
-        Some(alias) if alias != "/api/send" && alias != "/api/batch" => {
-            router.route(alias, post(collect::send))
-        }
-        _ => router,
+    if let Some(alias) = config.collect.endpoint_alias.as_deref()
+        && alias != "/api/send"
+        && alias != "/api/batch"
+    {
+        router = router.route(alias, post(collect::send));
     }
+
+    let script = TrackerScript::new(config.collect.endpoint_alias.as_deref());
+    let serve_script = get(move |headers: HeaderMap| async move { script.respond(&headers) });
+
+    for path in std::iter::once("/script.js")
+        .chain(config.tracker_script_aliases.iter().map(String::as_str))
+    {
+        router = router.route(path, serve_script.clone());
+    }
+
+    router
 }
 
 /// Upstream's API response headers (`next.config.ts`): permissive CORS so trackers
