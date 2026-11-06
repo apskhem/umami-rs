@@ -1,10 +1,15 @@
 [package]
 name = "crate-ua-rules"
-description = "User-agent classification ported from detect-browser, isbot and ua-parser-js"
+description = "User-agent classification (bots, browser, OS, device type) ported from detect-browser, isbot and ua-parser-js"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["user-agent", "bot-detection", "browser", "parser"]
+categories = ["parser-implementations", "web-programming"]
 publish = false
 
 [dependencies]

@@ -1,10 +1,16 @@
 [package]
 name = "umami-server"
-description = "Headless Umami-compatible analytics API server"
+description = "Drop-in Rust backend for Umami 3.4.1: the same JSON API and Postgres schema, compatible with the official tracker and dashboard"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../README.md"
+keywords = ["umami", "analytics", "web-analytics", "privacy", "server"]
+categories = ["web-programming::http-server"]
 
 [[bin]]
 name = "umami-server"
