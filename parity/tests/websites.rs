@@ -144,13 +144,6 @@ async fn creating_websites() {
         assert_same_by(&u, &r, timestamps, &format!("create {body}"));
     }
 
-    // A taken share ID fails after the website is created, on both servers.
-    let body = create(json!({ "name": "Clash", "domain": "example.com", "shareId": share }));
-    let (u, r) = stack
-        .call_as(&user, Method::POST, "/api/websites", Some(&body))
-        .await;
-    assert_eq!((u.status, r.status), (500, 500), "{u:?} {r:?}");
-
     stack
         .assert_same_snapshot(
             "select w.website_id, w.name, w.domain, w.user_id, w.team_id, w.created_by, \
@@ -162,6 +155,32 @@ async fn creating_websites() {
             "created websites",
         )
         .await;
+
+    // A taken share ID: upstream creates the website, then fails with a 500 on
+    // the share link; umami-rs answers 400 and creates neither.
+    let body = create(json!({ "name": "Clash", "domain": "example.com", "shareId": share }));
+    let (u, r) = stack
+        .call_as(&user, Method::POST, "/api/websites", Some(&body))
+        .await;
+    assert_eq!((u.status, r.status), (500, 400), "{u:?} {r:?}");
+    assert_eq!(
+        r.body["error"]["message"],
+        "That share ID is already taken."
+    );
+
+    let clash = "select name from website where website_id = any($1)";
+    let id = [body["id"].as_str().unwrap().parse().unwrap()];
+    assert_eq!(
+        stack.upstream.snapshot(clash, &id).await,
+        json!([{ "name": "Clash" }])
+    );
+    assert_eq!(stack.rs.snapshot(clash, &id).await, json!([]));
+
+    // A taken website ID is a 500 upstream and a 400 here.
+    let (u, r) = stack
+        .call_as(&user, Method::POST, "/api/websites", Some(&body))
+        .await;
+    assert_eq!((u.status, r.status), (500, 400), "{u:?} {r:?}");
 }
 
 #[tokio::test]
@@ -310,8 +329,18 @@ async fn listing_websites() {
     .await;
     let tag = tag();
 
-    for name in ["Alpha", "Bravo", "Charlie"] {
-        seed_website(&stack, &format!("{name} {tag}"), Some(owner.id), None).await;
+    // Distinct creation times: upstream orders ties arbitrarily (umami-rs by ID).
+    for (minutes, name) in ["Alpha", "Bravo", "Charlie"].iter().enumerate() {
+        let id = seed_website(&stack, &format!("{name} {tag}"), Some(owner.id), None).await;
+        stack
+            .execute(
+                &format!(
+                    "update website set created_at = created_at + interval '{minutes} minutes' \
+                     where website_id = $1[1]"
+                ),
+                &[id],
+            )
+            .await;
     }
     let team_site = seed_website(&stack, &format!("Delta {tag}"), None, Some(team)).await;
     stack
@@ -564,5 +593,75 @@ async fn reading_websites_with_share_tokens() {
         let (u, r) = stack.call_both(Method::GET, &path, &headers, None).await;
         assert_eq!(u.status, status, "{path}: {u:?}");
         assert_same(&u, &r, &[], &format!("share token on {path}"));
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires the parity stack (parity/compose.yaml)"]
+async fn upstream_inconsistencies() {
+    let stack = Stack::connect().await;
+    let (_, admin) = stack.session("admin").await;
+    let (owner, owner_tokens) = stack.session("user").await;
+    let website = seed_website(&stack, "Original", Some(owner.id), None).await;
+    let path = format!("/api/websites/{website}");
+
+    // A taken share ID refuses the whole update here; upstream renames the
+    // website before refusing.
+    let taken = format!("parity{}", tag());
+    stack
+        .execute(
+            &format!(
+                "insert into share (share_id, entity_id, name, share_type, slug, parameters) \
+                 values ($1[1], $1[2], 'Taken', 1, '{taken}', '{{}}')"
+            ),
+            &[Uuid::new_v4(), Uuid::new_v4()],
+        )
+        .await;
+    let body = json!({ "name": "Renamed", "shareId": taken });
+    let (u, r) = stack
+        .call_as(&owner_tokens, Method::POST, &path, Some(&body))
+        .await;
+    assert_eq!(u.status, 400);
+    assert_same(&u, &r, &[], "update with a taken share ID");
+
+    let name = "select name from website where website_id = any($1)";
+    assert_eq!(
+        stack.upstream.snapshot(name, &[website]).await,
+        json!([{ "name": "Renamed" }])
+    );
+    assert_eq!(
+        stack.rs.snapshot(name, &[website]).await,
+        json!([{ "name": "Original" }])
+    );
+
+    // Admins can name users and teams that do not exist; upstream stores the
+    // dangling IDs, umami-rs answers 404.
+    let unknown = Uuid::new_v4();
+    for (path, body, message) in [
+        (
+            "/api/websites".to_owned(),
+            json!({ "name": "Site", "domain": "example.com", "teamId": unknown }),
+            "Team not found.",
+        ),
+        (
+            format!("{path}/transfer"),
+            json!({ "teamId": unknown }),
+            "Team not found.",
+        ),
+        (
+            format!("{path}/transfer"),
+            json!({ "userId": unknown }),
+            "User not found",
+        ),
+    ] {
+        let (u, r) = stack
+            .call_as(&admin, Method::POST, &path, Some(&body))
+            .await;
+        assert_eq!(
+            (u.status, r.status),
+            (200, 404),
+            "{path} {body}: {u:?} {r:?}"
+        );
+        assert_eq!(r.body["error"]["message"], message);
     }
 }

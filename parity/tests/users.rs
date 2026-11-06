@@ -263,16 +263,21 @@ async fn listing_users() {
     assert_eq!(u.body["count"], 1);
     assert_eq!(u.body["data"][0]["_count"]["websites"], 1);
 
-    // Search is case-insensitive and, as in Prisma, `_` is a wildcard.
-    let wildcard = format!(
-        "/api/admin/users?search={}",
-        listed.username.replace('-', "_").to_uppercase()
-    );
+    // Search is case-insensitive on both servers.
+    let upper = format!("/api/admin/users?search={}", listed.username.to_uppercase());
     let (u, r) = stack
-        .call_as(&admin_tokens, Method::GET, &wildcard, None)
+        .call_as(&admin_tokens, Method::GET, &upper, None)
         .await;
     assert_eq!(u.body["count"], 1, "{u:?}");
-    assert_same(&u, &r, &[], "wildcard search");
+    assert_same(&u, &r, &[], "case-insensitive search");
+
+    // Upstream treats `_` and `%` as wildcards; umami-rs matches them literally.
+    for search in [listed.username.replace('-', "_"), "%25".to_owned()] {
+        let path = format!("/api/admin/users?search={search}&pageSize=1");
+        let (u, r) = stack.call_as(&admin_tokens, Method::GET, &path, None).await;
+        assert_eq!(u.body["data"].as_array().unwrap().len(), 1, "{path}: {u:?}");
+        assert_eq!(r.body["count"], 0, "{path}: {r:?}");
+    }
 
     // The user's own lists.
     let teams = format!("/api/users/{}/teams", listed.id);
@@ -395,86 +400,139 @@ async fn deleting_users() {
     assert_eq!(u.status, 200, "{u:?}");
     assert_same(&u, &r, &[], "delete user");
 
-    // Everything the user owned is gone; the team's website and the website in
-    // the colleague's team survive without their team or creator.
+    // Both servers delete the user, their website's data and their team, and
+    // keep the website they created in the colleague's team, without a creator.
     let snapshots = [
-        r#"select user_id, deleted_at from "user" where user_id = any($1)"#,
-        "select website_id, user_id, team_id, created_by, updated_at is null as untouched \
-         from website where website_id = any($1) order by website_id",
+        r#"select user_id from "user" where user_id = any($1)"#,
         "select team_id from team where team_id = any($1) order by team_id",
         "select team_id, user_id, role from team_user where team_id = any($1) order by team_id, user_id",
-        "select link_id, user_id, team_id from link where link_id = any($1)",
-        "select entity_id, slug from share where entity_id = any($1) order by slug",
         "select session_id from session where session_id = any($1)",
         "select count(*) from website_event where session_id = any($1)",
+        "select website_id, user_id, team_id, created_by, updated_at is null as untouched \
+         from website where website_id = any($1) and team_id is not null",
     ];
     for sql in snapshots {
         stack
             .assert_same_snapshot(sql, &ids, "after deleting a user")
             .await;
     }
-    let websites = stack
-        .upstream
-        .snapshot(
-            "select website_id from website where website_id = any($1)",
-            &ids,
-        )
-        .await;
-    assert_eq!(websites.as_array().unwrap().len(), 2, "{websites}");
+
+    // Upstream keeps the owned team's website and link without a team, and the
+    // deleted website's share link; umami-rs deletes them.
+    let leftovers = "select 'website' as kind, website_id as id from website \
+         where website_id = any($1) and team_id is null \
+         union all select 'link', link_id from link where link_id = any($1) \
+         union all select 'share', entity_id from share where entity_id = any($1) \
+         order by kind";
+    assert_eq!(
+        stack.upstream.snapshot(leftovers, &ids).await,
+        json!([
+            { "kind": "link", "id": link },
+            { "kind": "share", "id": own_site },
+            { "kind": "website", "id": team_site },
+        ])
+    );
+    assert_eq!(stack.rs.snapshot(leftovers, &ids).await, json!([]));
 }
 
 #[tokio::test]
 #[ignore = "requires the parity stack (parity/compose.yaml)"]
-async fn deleting_users_with_revenue_fails() {
+async fn deleting_users_with_collected_data() {
     let stack = Stack::connect().await;
     let (_, admin) = stack.session("admin").await;
     let (victim, _) = stack.session("user").await;
     let [website, session, event] = std::array::from_fn(|_| Uuid::new_v4());
     let ids = [victim.id, website, session, event];
 
-    // Upstream deletes the website's sessions but not its revenue, which Prisma's
-    // emulated relations refuse: the delete fails and nothing changes.
-    stack.execute(
-        "insert into website (website_id, name, domain, user_id) values ($1[2], 'Shop', 'shop.example', $1[1]); \
-         insert into session (session_id, website_id) values ($1[3], $1[2]); \
-         insert into website_event (event_id, website_id, session_id, visit_id, url_path, event_type) \
-         values ($1[4], $1[2], $1[3], $1[3], '/', 2); \
-         insert into revenue (revenue_id, website_id, session_id, event_id, event_name, currency, revenue, created_at) \
-         values (gen_random_uuid(), $1[2], $1[3], $1[4], 'buy', 'USD', 1, now())",
-        &ids,
-    )
-    .await;
+    // Upstream deletes the website's sessions but not its revenue or segments,
+    // which Prisma's emulated relations refuse: the delete fails with a 500 and
+    // nothing changes. umami-rs deletes them all.
+    stack
+        .execute(
+            "insert into website (website_id, name, domain, user_id) values ($1[2], 'Shop', 'shop.example', $1[1]); \
+             insert into session (session_id, website_id) values ($1[3], $1[2]); \
+             insert into website_event (event_id, website_id, session_id, visit_id, url_path, event_type) \
+             values ($1[4], $1[2], $1[3], $1[3], '/', 2); \
+             insert into revenue (revenue_id, website_id, session_id, event_id, event_name, currency, revenue, created_at) \
+             values (gen_random_uuid(), $1[2], $1[3], $1[4], 'buy', 'USD', 1, now()); \
+             insert into segment (segment_id, website_id, type, name, parameters) \
+             values (gen_random_uuid(), $1[2], 'segment', 'Buyers', '{}')",
+            &ids,
+        )
+        .await;
 
     let path = format!("/api/users/{}", victim.id);
     let (u, r) = stack.call_as(&admin, Method::DELETE, &path, None).await;
-    assert_eq!((u.status, r.status), (500, 500), "{u:?} {r:?}");
+    assert_eq!((u.status, r.status), (500, 200), "{u:?} {r:?}");
 
-    for sql in [
-        r#"select user_id from "user" where user_id = any($1)"#,
-        "select website_id from website where website_id = any($1)",
-        "select event_id from website_event where event_id = any($1)",
-    ] {
-        let rows = stack
-            .assert_same_snapshot(sql, &ids, "after a failed delete")
-            .await;
-        assert_eq!(rows.as_array().unwrap().len(), 1, "{sql}: {rows}");
-    }
+    let remaining = r#"select 'user' as kind from "user" where user_id = any($1)
+        union all select 'website' from website where website_id = any($1)
+        union all select 'event' from website_event where event_id = any($1)
+        union all select 'revenue' from revenue where website_id = any($1)
+        union all select 'segment' from segment where website_id = any($1)
+        order by kind"#;
+    assert_eq!(
+        stack.upstream.snapshot(remaining, &ids).await,
+        json!([
+            { "kind": "event" },
+            { "kind": "revenue" },
+            { "kind": "segment" },
+            { "kind": "user" },
+            { "kind": "website" },
+        ])
+    );
+    assert_eq!(stack.rs.snapshot(remaining, &ids).await, json!([]));
 }
 
 #[tokio::test]
 #[ignore = "requires the parity stack (parity/compose.yaml)"]
-async fn unknown_users_differ_only_in_status() {
+async fn upstream_server_errors() {
     let stack = Stack::connect().await;
     let (_, admin) = stack.session("admin").await;
+    let (existing, _) = stack.session("user").await;
+    let (deleted, _) = stack.session("user").await;
+    stack
+        .execute(
+            r#"update "user" set deleted_at = now() where user_id = $1[1]"#,
+            &[deleted.id],
+        )
+        .await;
 
-    // Upstream fails with a 500 when deleting a user that does not exist, or
-    // looking one up by a malformed ID; umami-rs answers 404.
+    // Upstream fails with a 500 for unknown and malformed user IDs; umami-rs
+    // answers 404.
     for (method, path) in [
         (Method::DELETE, format!("/api/users/{}", Uuid::new_v4())),
         (Method::GET, "/api/users/not-a-uuid".to_owned()),
     ] {
         let (u, r) = stack.call_as(&admin, method.clone(), &path, None).await;
-        assert_eq!(u.status, 500, "{method} {path}: {u:?}");
-        assert_eq!(r.status, 404, "{method} {path}: {r:?}");
+        assert_eq!(
+            (u.status, r.status),
+            (500, 404),
+            "{method} {path}: {u:?} {r:?}"
+        );
+    }
+
+    // Upstream fails with a 500 on unique constraints it does not check first: a
+    // taken user ID, or the username of a deleted user. umami-rs answers 400.
+    let taken_id = json!({
+        "id": existing.id,
+        "username": format!("parity-taken-{}", tag()),
+        "password": "long enough",
+        "role": "user",
+    });
+    let renamed = json!({ "username": deleted.username });
+    for (path, body) in [
+        ("/api/users".to_owned(), taken_id),
+        (format!("/api/users/{}", existing.id), renamed),
+    ] {
+        let (u, r) = stack
+            .call_as(&admin, Method::POST, &path, Some(&body))
+            .await;
+        assert_eq!(
+            (u.status, r.status),
+            (500, 400),
+            "{path} {body}: {u:?} {r:?}"
+        );
+        assert_eq!(r.body["error"]["message"], "User already exists");
     }
 }

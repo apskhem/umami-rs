@@ -116,11 +116,21 @@ async fn creating_teams() {
         assert!(code.starts_with("team_") && code.len() == 21, "{code}");
     }
 
+    let (other, _) = stack.session("user").await;
+    let body = json!({ "name": "Parity team", "ownerId": other.id });
     let (u, r) = stack
         .call_as(&admin, Method::POST, "/api/teams", Some(&body))
         .await;
     assert_eq!(u.body[1]["userId"], body["ownerId"]);
     assert_same_by(&u, &r, normalize, "create for another owner");
+
+    // An owner that does not exist: upstream creates the team anyway.
+    let body = json!({ "name": "Parity team", "ownerId": Uuid::new_v4() });
+    let (u, r) = stack
+        .call_as(&admin, Method::POST, "/api/teams", Some(&body))
+        .await;
+    assert_eq!((u.status, r.status), (200, 404), "{u:?} {r:?}");
+    assert_eq!(r.body["error"]["message"], "User not found");
 }
 
 #[tokio::test]
@@ -413,16 +423,62 @@ async fn deleting_teams() {
         assert_same(&u, &r, &[], "delete team");
     }
 
-    // The team, its members and boards are deleted; its websites are kept
-    // without a team.
+    // The team, its members and boards are deleted on both servers.
     for sql in [
         "select team_id from team where team_id = any($1)",
         "select user_id from team_user where team_id = any($1)",
         "select board_id from board where board_id = any($1)",
-        "select website_id, team_id, user_id, updated_at from website where website_id = any($1)",
     ] {
         stack
             .assert_same_snapshot(sql, &ids, "after deleting a team")
             .await;
     }
+
+    // Upstream warns that deleting a team deletes its websites, but keeps them
+    // without a team; umami-rs deletes them.
+    let websites = "select website_id, team_id from website where website_id = any($1)";
+    assert_eq!(
+        stack.upstream.snapshot(websites, &ids).await,
+        json!([{ "website_id": website, "team_id": null }])
+    );
+    assert_eq!(stack.rs.snapshot(websites, &ids).await, json!([]));
+}
+
+#[tokio::test]
+#[ignore = "requires the parity stack (parity/compose.yaml)"]
+async fn upstream_inconsistencies() {
+    let stack = Stack::connect().await;
+    let (owner, owner_tokens) = stack.session("user").await;
+    let team = seed_team(&stack, &[(&owner, "team-owner")]).await;
+    let other = seed_team(&stack, &[(&owner, "team-owner")]).await;
+
+    // Adding a user that does not exist: upstream stores the membership, which
+    // then lists with `user: null`; umami-rs answers 404.
+    let body = json!({ "userId": Uuid::new_v4(), "role": "team-member" });
+    let (u, r) = stack
+        .call_as(
+            &owner_tokens,
+            Method::POST,
+            &format!("/api/teams/{}/users", team.id),
+            Some(&body),
+        )
+        .await;
+    assert_eq!((u.status, r.status), (200, 404), "{u:?} {r:?}");
+    assert_eq!(r.body["error"]["message"], "User not found");
+
+    // Another team's access code: a 500 upstream, a 400 here.
+    let body = json!({ "accessCode": other.access_code });
+    let (u, r) = stack
+        .call_as(
+            &owner_tokens,
+            Method::POST,
+            &format!("/api/teams/{}", team.id),
+            Some(&body),
+        )
+        .await;
+    assert_eq!((u.status, r.status), (500, 400), "{u:?} {r:?}");
+    assert_eq!(
+        r.body["error"]["message"],
+        "That access code is already taken."
+    );
 }

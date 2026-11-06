@@ -6,7 +6,7 @@ use sqlx::{PgConnection, PgPool, QueryBuilder};
 use uuid::Uuid;
 
 use super::team::{ROLE_MANAGER, ROLE_OWNER, Team, TeamUser, usernames};
-use super::{Filters, IDS, into_map, now, restrict, sort_column};
+use super::{Filters, into_map, now, sort_column};
 use crate::json as js;
 use crate::zod;
 
@@ -155,8 +155,13 @@ pub async fn list(db: &PgPool, scope: Scope, filters: Filters) -> sqlx::Result<V
 
     let mut query = QueryBuilder::new(format!("select {WEBSITE_COLUMNS} from website w"));
     push_where(&mut query);
-    let default_order = matches!(scope, Scope::All).then_some("w.created_at desc");
-    filters.push_order(&mut query, sort_column, default_order);
+    // Upstream leaves a team's websites unordered; every list here defaults
+    // to name order, except the admin list (newest first).
+    let default_order = match scope {
+        Scope::All => "w.created_at desc",
+        _ => "w.name asc",
+    };
+    filters.push_order(&mut query, sort_column, default_order, "w.website_id");
     filters.push_limit(&mut query);
     let websites: Vec<Website> = query.build_query_as().fetch_all(db).await?;
 
@@ -249,7 +254,7 @@ async fn include_owners(
     .await?;
     let owners: Vec<TeamUser> = sqlx::query_as(
         "select team_user_id, team_id, user_id, role, created_at, updated_at from team_user \
-         where team_id = any($1) and role = $2",
+         where team_id = any($1) and role = $2 order by created_at, team_user_id",
     )
     .bind(&team_ids)
     .bind(ROLE_OWNER)
@@ -295,7 +300,7 @@ pub struct NewWebsite<'a> {
     pub created_by: Uuid,
 }
 
-pub async fn create(db: &PgPool, website: &NewWebsite<'_>) -> sqlx::Result<Website> {
+pub async fn create(tx: &mut PgConnection, website: &NewWebsite<'_>) -> sqlx::Result<Website> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "insert into website (website_id, name, domain, user_id, team_id, created_by, \
          created_at, updated_at) values ($1, $2, $3, $4, $5, $6, $7, $7) \
@@ -308,7 +313,7 @@ pub async fn create(db: &PgPool, website: &NewWebsite<'_>) -> sqlx::Result<Websi
     .bind(website.team_id)
     .bind(website.created_by)
     .bind(now())
-    .fetch_one(db)
+    .fetch_one(tx)
     .await
 }
 
@@ -323,7 +328,7 @@ pub struct WebsiteUpdate<'a> {
 
 /// Applies `changes`; `None` if the website does not exist.
 pub async fn update(
-    db: &PgPool,
+    tx: &mut PgConnection,
     website_id: Uuid,
     changes: &WebsiteUpdate<'_>,
 ) -> sqlx::Result<Option<Website>> {
@@ -342,7 +347,7 @@ pub async fn update(
     .bind(replay_config)
     .bind(recorder_enabled)
     .bind(now())
-    .fetch_optional(db)
+    .fetch_optional(tx)
     .await
 }
 
@@ -369,7 +374,7 @@ pub async fn transfer(
 /// A website share with upstream's defaults (`createShare` in the website routes).
 /// Fails on a duplicate slug.
 pub async fn create_share(
-    db: &PgPool,
+    tx: &mut PgConnection,
     share_id: Uuid,
     website: &Website,
     slug: &str,
@@ -387,23 +392,22 @@ pub async fn create_share(
     .bind(slug)
     .bind(json!({ "overview": true, "events": true }))
     .bind(at)
-    .fetch_one(db)
+    .fetch_one(tx)
     .await
 }
 
 /// Upstream's `deleteSharesByEntityId`.
-pub async fn delete_shares(db: &PgPool, entity_id: Uuid) -> sqlx::Result<()> {
+pub async fn delete_shares(tx: &mut PgConnection, entity_id: Uuid) -> sqlx::Result<()> {
     sqlx::query("delete from share where entity_id = $1")
         .bind(entity_id)
-        .execute(db)
+        .execute(tx)
         .await?;
 
     Ok(())
 }
 
-/// Upstream's `deleteWebsiteDependentData`: the website's collected data. The
-/// rows Prisma's emulated relations would check for are all deleted here.
-async fn delete_dependent_data(tx: &mut PgConnection, website_id: Uuid) -> sqlx::Result<()> {
+/// Upstream's `deleteWebsiteDependentData`: the collected data of `ids`.
+async fn delete_collected_data(tx: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<()> {
     for table in [
         "session_replay_saved",
         "session_replay",
@@ -411,35 +415,31 @@ async fn delete_dependent_data(tx: &mut PgConnection, website_id: Uuid) -> sqlx:
         "revenue",
         "event_data",
     ] {
-        delete_by_website(tx, table, website_id).await?;
+        delete_by_website(tx, table, ids).await?;
     }
 
     // Event data whose own website_id drifted from its event's.
     sqlx::query(
         "delete from event_data using website_event \
          where event_data.website_event_id = website_event.event_id \
-         and website_event.website_id = $1",
+         and website_event.website_id = any($1)",
     )
-    .bind(website_id)
+    .bind(ids)
     .execute(&mut *tx)
     .await?;
 
     for table in ["session_data", "session_link", "website_event", "session"] {
-        delete_by_website(tx, table, website_id).await?;
+        delete_by_website(tx, table, ids).await?;
     }
 
     Ok(())
 }
 
-async fn delete_by_website(
-    tx: &mut PgConnection,
-    table: &str,
-    website_id: Uuid,
-) -> sqlx::Result<()> {
+async fn delete_by_website(tx: &mut PgConnection, table: &str, ids: &[Uuid]) -> sqlx::Result<()> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "delete from {table} where website_id = $1"
+        "delete from {table} where website_id = any($1)"
     )))
-    .bind(website_id)
+    .bind(ids)
     .execute(&mut *tx)
     .await?;
 
@@ -450,7 +450,7 @@ async fn delete_by_website(
 /// `false` if the website does not exist.
 pub async fn reset(db: &PgPool, website_id: Uuid) -> sqlx::Result<bool> {
     let mut tx = db.begin().await?;
-    delete_dependent_data(&mut tx, website_id).await?;
+    delete_collected_data(&mut tx, &[website_id]).await?;
 
     let at = now();
     let updated =
@@ -467,24 +467,11 @@ pub async fn reset(db: &PgPool, website_id: Uuid) -> sqlx::Result<bool> {
     Ok(true)
 }
 
-/// Upstream's `deleteWebsite` (self-hosted mode): the website, its data, reports,
-/// segments, annotations and shares. `false` if the website does not exist.
+/// Upstream's `deleteWebsite` (self-hosted mode). `false` if the website does
+/// not exist.
 pub async fn delete(db: &PgPool, website_id: Uuid) -> sqlx::Result<bool> {
     let mut tx = db.begin().await?;
-    delete_dependent_data(&mut tx, website_id).await?;
-    for table in ["report", "segment", "annotation"] {
-        delete_by_website(&mut tx, table, website_id).await?;
-    }
-    sqlx::query("delete from share where entity_id = $1")
-        .bind(website_id)
-        .execute(&mut *tx)
-        .await?;
-
-    let deleted = sqlx::query("delete from website where website_id = $1")
-        .bind(website_id)
-        .execute(&mut *tx)
-        .await?;
-    if deleted.rows_affected() == 0 {
+    if purge(&mut tx, &[website_id]).await? == 0 {
         return Ok(false);
     }
     tx.commit().await?;
@@ -492,28 +479,28 @@ pub async fn delete(db: &PgPool, website_id: Uuid) -> sqlx::Result<bool> {
     Ok(true)
 }
 
-/// Tables with a required relation to `website`, which block deleting it.
-pub(super) const WEBSITE_CHILDREN: &[&str] = &[
-    "annotation",
-    "event_data",
-    "report",
-    "revenue",
-    "segment",
-    "session_data",
-    "session_replay",
-    "session_replay_saved",
-    "heatmap_event",
-];
-
-/// `website.deleteMany` with Prisma's emulated relations.
-pub(super) async fn delete_websites(tx: &mut PgConnection, ids: &[Uuid]) -> anyhow::Result<()> {
-    for child in WEBSITE_CHILDREN {
-        restrict(tx, child, "website_id", IDS, ids).await?;
+/// Deletes websites with everything that belongs to them: collected data,
+/// reports, segments, annotations and share links. Returns how many websites
+/// were deleted.
+///
+/// Upstream deletes all of this for a single website, but when deleting a
+/// user it skips most of it (and so fails on revenue and the rest) and leaves
+/// share links behind; deleting a team keeps the team's websites without a team.
+/// umami-rs purges websites the same way in every case.
+pub(super) async fn purge(tx: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<u64> {
+    delete_collected_data(tx, ids).await?;
+    for table in ["report", "segment", "annotation"] {
+        delete_by_website(tx, table, ids).await?;
     }
-    sqlx::query("delete from website where website_id = any($1)")
+    sqlx::query("delete from share where entity_id = any($1)")
         .bind(ids)
         .execute(&mut *tx)
         .await?;
 
-    Ok(())
+    let deleted = sqlx::query("delete from website where website_id = any($1)")
+        .bind(ids)
+        .execute(&mut *tx)
+        .await?;
+
+    Ok(deleted.rows_affected())
 }

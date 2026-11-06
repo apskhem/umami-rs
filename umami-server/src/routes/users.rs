@@ -14,6 +14,8 @@ use crate::permissions::{self as can, ROLE_ADMIN, ROLE_USER, ROLE_VIEW_ONLY, db_
 use crate::queries::{team, user, website};
 use crate::state::AppState;
 
+const USER_EXISTS: &str = "User already exists";
+
 /// Upstream's `userRoleParam`.
 const USER_ROLES: &[&str] = &[ROLE_ADMIN, ROLE_USER, ROLE_VIEW_ONLY];
 
@@ -40,13 +42,16 @@ pub async fn create(
         return Err(AppError::Unauthorized);
     }
 
-    if user::username_taken(&state.db, username).await? {
-        return Err(AppError::BadRequest("User already exists".to_owned()));
+    if user::username_owner(&state.db, username).await?.is_some() {
+        return Err(AppError::BadRequest(USER_EXISTS.to_owned()));
     }
 
     let id = id.unwrap_or_else(|| crypto::random_uuid(state.config.collect.use_uuidv7));
     let hash = password::hash(password).await;
-    let created = user::create(&state.db, id, &username.to_lowercase(), &hash, role).await?;
+    // A taken ID fails here (a 500 upstream).
+    let created = user::create(&state.db, id, &username.to_lowercase(), &hash, role)
+        .await
+        .map_err(|e| AppError::taken(e, USER_EXISTS))?;
 
     Ok(Json(created))
 }
@@ -109,15 +114,22 @@ pub async fn update(
         changes.username = username.filter(|u| !u.is_empty()).map(str::to_lowercase);
     }
 
+    // Deleted users keep their usernames, which upstream misses (failing with
+    // a 500 on the unique constraint).
     if let Some(new_username) = &changes.username
         && *new_username != existing.username
-        && let Some(other) = store::user_by_username(&state.db, new_username).await?
-        && other.user_id != id
+        && user::username_owner(&state.db, new_username)
+            .await?
+            .is_some_and(|owner| owner != id)
     {
-        return Err(AppError::BadRequest("User already exists".to_owned()));
+        return Err(AppError::BadRequest(USER_EXISTS.to_owned()));
     }
 
-    Ok(Json(user::update(&state.db, id, &changes).await?))
+    let updated = user::update(&state.db, id, &changes)
+        .await
+        .map_err(|e| AppError::taken(e, USER_EXISTS))?;
+
+    Ok(Json(updated))
 }
 
 /// `DELETE /api/users/{userId}`: deletes a user and everything they own (admins

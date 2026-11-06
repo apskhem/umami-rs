@@ -12,10 +12,11 @@ use serde_json::{Map, Value, json};
 use super::body;
 use super::params::{PAGING_SEARCH_SORTING, Params};
 use super::users::website_scope;
-use crate::auth::Auth;
+use crate::auth::{Auth, store};
 use crate::crypto;
 use crate::error::{AppError, AppResult};
 use crate::permissions::{self as can, WEBSITE_DELETE, WEBSITE_UPDATE, db_id};
+use crate::queries::team;
 use crate::queries::website::{self, NewWebsite, Website, WebsiteUpdate};
 use crate::state::AppState;
 
@@ -26,6 +27,8 @@ static DOMAIN: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("valid domain regex")
 });
+
+const SHARE_ID_TAKEN: &str = "That share ID is already taken.";
 
 /// A website name: `z.string().trim().min(1).max(100)`.
 fn name(value: &str) -> AppResult<&str> {
@@ -111,9 +114,18 @@ pub async fn create(
         return Err(AppError::Unauthorized);
     }
     let user_id = auth.user()?.id;
+    // Only admins can name a team they are not in; upstream accepts any ID.
+    if let Some(team_id) = team_id
+        && !team::exists(&state.db, team_id).await?
+    {
+        return Err(AppError::team_not_found());
+    }
 
+    // Upstream creates the website before the share link, so a taken share ID
+    // fails with a 500 and leaves the website behind; here neither is created.
+    let mut tx = state.db.begin().await?;
     let created = website::create(
-        &state.db,
+        &mut tx,
         &NewWebsite {
             id: id.unwrap_or_else(|| new_id(&state)),
             name,
@@ -123,12 +135,18 @@ pub async fn create(
             created_by: user_id,
         },
     )
-    .await?;
+    .await
+    .map_err(|e| AppError::taken(e, "That website ID is already taken."))?;
 
     let share = match share_id.filter(|slug| !slug.is_empty()) {
-        Some(slug) => Some(website::create_share(&state.db, new_id(&state), &created, slug).await?),
+        Some(slug) => Some(
+            website::create_share(&mut tx, new_id(&state), &created, slug)
+                .await
+                .map_err(|e| AppError::taken(e, SHARE_ID_TAKEN))?,
+        ),
         None => None,
     };
+    tx.commit().await?;
 
     Ok(Json(with_share(&created, share)))
 }
@@ -198,26 +216,28 @@ pub async fn update(
         domain,
         replay_config,
     };
-    let updated = website::update(&state.db, current.website_id, &changes)
+    // Upstream saves the other changes even when the share ID is taken; here
+    // the update applies entirely or not at all.
+    let mut tx = state.db.begin().await?;
+    let updated = website::update(&mut tx, current.website_id, &changes)
         .await?
         .ok_or_else(|| AppError::Internal(anyhow::anyhow!("website disappeared during update")))?;
 
     if share_id == Some(None) {
-        website::delete_shares(&state.db, updated.website_id).await?;
+        website::delete_shares(&mut tx, updated.website_id).await?;
     }
+    let created_share = match share_id.flatten().filter(|slug| !slug.is_empty()) {
+        Some(slug) => Some(
+            website::create_share(&mut tx, new_id(&state), &updated, slug)
+                .await
+                .map_err(|e| AppError::taken(e, SHARE_ID_TAKEN))?,
+        ),
+        None => None,
+    };
+    tx.commit().await?;
 
-    let share = match share_id.flatten().filter(|slug| !slug.is_empty()) {
-        Some(slug) => {
-            match website::create_share(&state.db, new_id(&state), &updated, slug).await {
-                Ok(slug) => Some(slug),
-                Err(sqlx::Error::Database(error)) if error.is_unique_violation() => {
-                    return Err(AppError::BadRequest(
-                        "That share ID is already taken.".to_owned(),
-                    ));
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
+    let share = match created_share {
+        Some(slug) => Some(slug),
         None => website::latest_share(&state.db, updated.website_id).await?,
     };
 
@@ -374,7 +394,19 @@ pub async fn transfer(
         return Err(AppError::Unauthorized);
     }
 
+    // Admins may name any user or team; upstream accepts IDs that do not exist.
     let (user_id, team_id) = owner;
+    if let Some(user_id) = user_id
+        && store::user(&state.db, user_id).await?.is_none()
+    {
+        return Err(AppError::user_not_found());
+    }
+    if let Some(team_id) = team_id
+        && !team::exists(&state.db, team_id).await?
+    {
+        return Err(AppError::team_not_found());
+    }
+
     let moved = website::transfer(&state.db, db_id(&website_id)?, user_id, team_id)
         .await?
         .ok_or(AppError::NotFound)?;

@@ -5,9 +5,8 @@ use serde_json::{Value, json};
 use sqlx::{PgPool, QueryBuilder};
 use uuid::Uuid;
 
-use super::team::{ROLE_OWNER, delete_teams};
-use super::website::delete_websites;
-use super::{Filters, IDS, delete_where, into_map, now, restrict, set_null, sort_column};
+use super::team::{ROLE_OWNER, delete_owned_entities, delete_teams};
+use super::{Filters, delete_where, into_map, now, sort_column, website};
 use crate::auth::store;
 use crate::json as js;
 
@@ -25,11 +24,11 @@ pub fn to_json(user: &store::User) -> Value {
     })
 }
 
-/// Whether the username is taken, including by deleted users.
-pub async fn username_taken(db: &PgPool, username: &str) -> sqlx::Result<bool> {
-    sqlx::query_scalar(r#"select exists(select 1 from "user" where username = $1)"#)
+/// The user holding a username, including deleted users.
+pub async fn username_owner(db: &PgPool, username: &str) -> sqlx::Result<Option<Uuid>> {
+    sqlx::query_scalar(r#"select user_id from "user" where username = $1"#)
         .bind(username.to_lowercase())
-        .fetch_one(db)
+        .fetch_optional(db)
         .await
 }
 
@@ -70,7 +69,7 @@ pub async fn list(db: &PgPool, filters: Filters) -> sqlx::Result<Value> {
          from \"user\" u",
     );
     push_where(&mut query);
-    filters.push_order(&mut query, sort_column, None);
+    filters.push_order(&mut query, sort_column, "u.created_at desc", "u.user_id");
     filters.push_limit(&mut query);
     let users: Vec<UserRow> = query.build_query_as().fetch_all(db).await?;
 
@@ -154,94 +153,45 @@ pub async fn update(db: &PgPool, user_id: Uuid, changes: &UserUpdate) -> sqlx::R
     }))
 }
 
-/// Upstream's `deleteUser` (self-hosted mode): the user, their websites and
-/// those websites' data, the teams they own, and their links, pixels and boards.
+/// Upstream's `deleteUser` (self-hosted mode): the user, their websites, links,
+/// pixels and boards, and the teams they own with everything in them. Websites
+/// they created for other teams are kept, without `created_by`. `false` if the
+/// user does not exist.
 ///
-/// With Prisma's emulated relations this fails while the websites still have
-/// revenue, segments, annotations, replays or heatmap data, which upstream does
-/// not delete first; websites the user created for other teams lose
-/// `created_by`; and the teams' remaining websites, links, pixels and boards
-/// lose their `team_id`. `false` if the user does not exist.
-pub async fn delete(db: &PgPool, user_id: Uuid) -> anyhow::Result<bool> {
+/// Upstream deletes less of each website's data first, so it fails (with a 500)
+/// for users whose websites have revenue, segments, annotations, replays or
+/// heatmap data; it also leaves the websites' share links behind, and keeps the
+/// owned teams' websites, links, pixels and boards without a team. umami-rs
+/// deletes all of it.
+pub async fn delete(db: &PgPool, user_id: Uuid) -> sqlx::Result<bool> {
     let user = [user_id];
+    let mut tx = db.begin().await?;
+
+    let teams: Vec<Uuid> =
+        sqlx::query_scalar("select team_id from team_user where user_id = $1 and role = $2")
+            .bind(user_id)
+            .bind(ROLE_OWNER)
+            .fetch_all(&mut *tx)
+            .await?;
+    delete_teams(&mut tx, &teams).await?;
+
     let websites: Vec<Uuid> =
         sqlx::query_scalar("select website_id from website where user_id = $1")
             .bind(user_id)
-            .fetch_all(db)
+            .fetch_all(&mut *tx)
             .await?;
-    let teams: Vec<Uuid> = sqlx::query_scalar(
-        "select team_id from team t where exists (select 1 from team_user tu \
-         where tu.team_id = t.team_id and tu.user_id = $1 and tu.role = $2)",
-    )
-    .bind(user_id)
-    .bind(ROLE_OWNER)
-    .fetch_all(db)
-    .await?;
+    website::purge(&mut tx, &websites).await?;
+    delete_owned_entities(&mut tx, "user_id = any($1)", &user).await?;
 
-    const OWNED: &str = "(user_id = $1 or team_id = any($2))";
-    let entities: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "select link_id from link where {OWNED} \
-         union all select pixel_id from pixel where {OWNED} \
-         union all select board_id from board where {OWNED}"
-    )))
-    .bind(user_id)
-    .bind(&teams)
-    .fetch_all(db)
-    .await?;
-
-    let mut tx = db.begin().await?;
-
-    delete_where(&mut tx, "event_data", "website_id", &websites).await?;
-    delete_where(&mut tx, "session_data", "website_id", &websites).await?;
-
-    let events = "select event_id from website_event where website_id = any($1)";
-    restrict(&mut tx, "event_data", "website_event_id", events, &websites).await?;
-    delete_where(&mut tx, "website_event", "website_id", &websites).await?;
-
-    let sessions = "select session_id from session where website_id = any($1)";
-    for child in ["website_event", "session_data", "revenue"] {
-        restrict(&mut tx, child, "session_id", sessions, &websites).await?;
+    for table in ["team_user", "report"] {
+        delete_where(&mut tx, table, "user_id", &user).await?;
     }
-    delete_where(&mut tx, "session", "website_id", &websites).await?;
-
-    sqlx::query("delete from team_user where team_id = any($1) or user_id = $2")
-        .bind(&teams)
+    // Prisma's emulated `SetNull`, which leaves `updated_at` alone.
+    sqlx::query("update website set created_by = null where created_by = $1")
         .bind(user_id)
         .execute(&mut *tx)
         .await?;
-    delete_teams(&mut tx, &teams).await?;
-
-    sqlx::query("delete from report where website_id = any($1) or user_id = $2")
-        .bind(&websites)
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await?;
-    delete_where(&mut tx, "share", "entity_id", &entities).await?;
-
-    for table in ["link", "pixel", "board"] {
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "delete from {table} where {OWNED}"
-        )))
-        .bind(user_id)
-        .bind(&teams)
-        .execute(&mut *tx)
-        .await?;
-    }
-    delete_websites(&mut tx, &websites).await?;
-
-    // `user.delete` and its emulated relations.
-    for child in ["team_user", "report"] {
-        restrict(&mut tx, child, "user_id", IDS, &user).await?;
-    }
-    for (table, column) in [
-        ("website", "user_id"),
-        ("website", "created_by"),
-        ("link", "user_id"),
-        ("pixel", "user_id"),
-        ("board", "user_id"),
-    ] {
-        set_null(&mut tx, table, column, &user).await?;
-    }
+    // Upstream's cascading relations.
     for table in [
         "api_key",
         "two_factor_auth",
@@ -259,7 +209,6 @@ pub async fn delete(db: &PgPool, user_id: Uuid) -> anyhow::Result<bool> {
     if deleted.rows_affected() == 0 {
         return Ok(false);
     }
-
     tx.commit().await?;
 
     Ok(true)

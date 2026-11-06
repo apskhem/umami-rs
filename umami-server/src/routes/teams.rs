@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::body;
 use super::params::{PAGING_SEARCH, PAGING_SEARCH_SORTING, PAGING_SORTING, Params};
-use crate::auth::Auth;
+use crate::auth::{Auth, store};
 use crate::crypto;
 use crate::error::{AppError, AppResult};
 use crate::permissions::{self as can, TEAM_DELETE, TEAM_UPDATE, db_id, team_role_rank};
@@ -59,6 +59,10 @@ pub async fn create(
     }
     let user = auth.user()?;
     let owner = owner_id.filter(|_| user.is_admin).unwrap_or(user.id);
+    // Upstream accepts an owner that does not exist.
+    if owner != user.id && store::user(&state.db, owner).await?.is_none() {
+        return Err(AppError::user_not_found());
+    }
 
     let access_code = format!("team_{}", crypto::random_chars(16));
     let (created, member) = team::create(
@@ -153,7 +157,8 @@ pub async fn update(
     }
 
     let updated = team::update(&state.db, db_id(&team_id)?, name, access_code)
-        .await?
+        .await
+        .map_err(|e| AppError::taken(e, "That access code is already taken."))?
         .ok_or(AppError::NotFound)?;
 
     Ok(Json(Value::Object(updated.to_json())))
@@ -213,6 +218,10 @@ pub async fn add_member(
         return Err(AppError::unauthorized_message(NOT_OWNER_OR_MANAGER));
     }
 
+    // Upstream adds users that do not exist, which then list with `user: null`.
+    if store::user(&state.db, user_id).await?.is_none() {
+        return Err(AppError::user_not_found());
+    }
     let team_id = db_id(&team_id)?;
     if team::team_user(&state.db, team_id, user_id)
         .await?

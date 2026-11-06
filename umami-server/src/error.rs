@@ -104,6 +104,29 @@ impl AppError {
     }
 }
 
+impl AppError {
+    /// A 400 with `message` if `error` is a unique-constraint violation (such as
+    /// a taken ID or slug), where upstream fails with a 500; other errors as usual.
+    pub fn taken(error: sqlx::Error, message: &str) -> Self {
+        match &error {
+            sqlx::Error::Database(db) if db.is_unique_violation() => {
+                Self::BadRequest(message.to_owned())
+            }
+            _ => error.into(),
+        }
+    }
+
+    /// Upstream's 404 for a team that is missing or deleted.
+    pub fn team_not_found() -> Self {
+        Self::coded(StatusCode::NOT_FOUND, "not-found", "Team not found.")
+    }
+
+    /// A 404 for a user that is missing or deleted.
+    pub fn user_not_found() -> Self {
+        Self::coded(StatusCode::NOT_FOUND, "not-found", "User not found")
+    }
+}
+
 impl From<sqlx::Error> for AppError {
     fn from(error: sqlx::Error) -> Self {
         Self::Internal(error.into())

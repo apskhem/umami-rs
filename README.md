@@ -89,17 +89,26 @@ User administration (`/api/users/*`, `/api/admin/users`), teams and their member
 `/api/admin/websites`) behave as upstream's, with the same roles and permissions,
 paging, sorting and search.
 
-Upstream runs Prisma with `relationMode = "prisma"`, which emulates foreign keys
-when rows are deleted, and umami-rs reproduces those effects. Deleting a team keeps
-its websites but clears their `team_id`. Deleting a user clears `created_by` on
-websites they created for other teams. As upstream does, deleting a user fails with
-a 500 and changes nothing while their websites still have revenue, segments,
-annotations, replays or heatmap data.
+Differences from upstream, where upstream fails or leaves inconsistent data:
 
-Differences from upstream: deleting, resetting or transferring a user, team or
-website that does not exist returns 404, where upstream errors with 500. Routes that
-need a signed-in user return 401 to share-link visitors, where upstream errors
-with 500.
+- **Deleting** a team also deletes its websites, as upstream's UI warns it will
+  (upstream keeps them without a team). Deleting a user deletes everything their
+  websites hold, the teams they own with those teams' websites, links, pixels and
+  boards, and their websites' share links. Upstream refuses with a 500 while the
+  websites have revenue, segments, annotations, replays or heatmap data, and
+  otherwise leaves those rows behind.
+- **Taken IDs, usernames (including a deleted user's), share IDs and access codes**
+  return 400 where upstream fails with a 500. Creating or updating a website with a
+  taken share ID changes nothing (upstream creates or updates the website first).
+- **Users and teams that do not exist** cannot be made team members, team owners,
+  website teams or transfer targets (404); upstream stores the dangling IDs.
+- **Lists** are always in a stable order, ties broken by ID, so pages never
+  overlap. Lists upstream leaves unordered (a user's teams, a team's websites and
+  members) are ordered by name or join time. Search matches `%` and `_` literally,
+  where upstream treats them as wildcards.
+- **Missing records** (deleting, resetting or transferring something that does not
+  exist, or a malformed ID) return 404 where upstream fails with a 500, and routes
+  that need a signed-in user return 401 to share-link visitors.
 
 ## Tracker script
 

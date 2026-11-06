@@ -2,10 +2,10 @@
 
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value, json};
-use sqlx::{PgPool, QueryBuilder};
+use sqlx::{PgConnection, PgPool, QueryBuilder};
 use uuid::Uuid;
 
-use super::{Filters, IDS, delete_where, into_map, now, restrict, set_null, sort_column};
+use super::{Filters, delete_where, into_map, now, sort_column, website};
 use crate::json as js;
 
 pub const ROLE_OWNER: &str = "team-owner";
@@ -103,13 +103,24 @@ pub async fn get(db: &PgPool, team_id: Uuid) -> sqlx::Result<Option<Team>> {
     .await
 }
 
+/// Whether the team exists and is not deleted.
+pub async fn exists(db: &PgPool, team_id: Uuid) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "select exists(select 1 from team where team_id = $1 and deleted_at is null)",
+    )
+    .bind(team_id)
+    .fetch_one(db)
+    .await
+}
+
 /// A team with `include: { members: true }`.
 pub async fn get_with_members(db: &PgPool, team_id: Uuid) -> sqlx::Result<Option<Value>> {
     let Some(team) = get(db, team_id).await? else {
         return Ok(None);
     };
     let members: Vec<TeamUser> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select {TEAM_USER_COLUMNS} from team_user where team_id = $1"
+        "select {TEAM_USER_COLUMNS} from team_user where team_id = $1 \
+         order by created_at, team_user_id"
     )))
     .bind(team_id)
     .fetch_all(db)
@@ -181,8 +192,12 @@ pub async fn list(db: &PgPool, scope: Scope, filters: Filters) -> sqlx::Result<V
          from team t"
     ));
     push_where(&mut query);
-    let default_order = matches!(scope, Scope::All).then_some("t.created_at desc");
-    filters.push_order(&mut query, sort_column, default_order);
+    // Upstream leaves a member's teams unordered; these list by name.
+    let default_order = match scope {
+        Scope::Member(_) => "t.name asc",
+        Scope::All => "t.created_at desc",
+    };
+    filters.push_order(&mut query, sort_column, default_order, "t.team_id");
     filters.push_limit(&mut query);
     let rows: Vec<TeamRow> = query.build_query_as().fetch_all(db).await?;
 
@@ -224,7 +239,8 @@ async fn members_with_users(
     team_ids: &[Uuid],
 ) -> sqlx::Result<Vec<(TeamUser, Value)>> {
     let members: Vec<TeamUser> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "select {TEAM_USER_COLUMNS} from team_user where team_id = any($1)"
+        "select {TEAM_USER_COLUMNS} from team_user where team_id = any($1) \
+         order by created_at, team_user_id"
     )))
     .bind(team_ids)
     .fetch_all(db)
@@ -275,7 +291,7 @@ pub async fn members_page(db: &PgPool, team_id: Uuid, filters: Filters) -> sqlx:
 
     let mut query = QueryBuilder::new(format!("select {TEAM_USER_COLUMNS} from team_user tu"));
     push_where(&mut query);
-    filters.push_order(&mut query, |_| None, Some("tu.created_at asc"));
+    filters.push_order(&mut query, |_| None, "tu.created_at asc", "tu.team_user_id");
     filters.push_limit(&mut query);
     let members: Vec<TeamUser> = query.build_query_as().fetch_all(db).await?;
 
@@ -350,21 +366,10 @@ pub async fn update(
     .await
 }
 
-/// Upstream's `deleteTeam` (self-hosted mode), with Prisma's emulated relations:
-/// the team's websites are kept but lose their `team_id`. `false` if the team
-/// does not exist.
-pub async fn delete(db: &PgPool, team_id: Uuid) -> anyhow::Result<bool> {
-    let ids = [team_id];
-    let entities = owned_entities(db, "team_id = any($1)", &ids).await?;
+/// Upstream's `deleteTeam` (self-hosted mode). `false` if the team does not exist.
+pub async fn delete(db: &PgPool, team_id: Uuid) -> sqlx::Result<bool> {
     let mut tx = db.begin().await?;
-
-    delete_where(&mut tx, "team_user", "team_id", &ids).await?;
-    delete_where(&mut tx, "share", "entity_id", &entities).await?;
-    for table in ["link", "pixel", "board"] {
-        delete_where(&mut tx, table, "team_id", &ids).await?;
-    }
-
-    if !delete_teams(&mut tx, &ids).await? {
+    if delete_teams(&mut tx, &[team_id]).await? == 0 {
         return Ok(false);
     }
     tx.commit().await?;
@@ -372,44 +377,61 @@ pub async fn delete(db: &PgPool, team_id: Uuid) -> anyhow::Result<bool> {
     Ok(true)
 }
 
-/// `team.delete`/`deleteMany` with Prisma's emulated relations; whether any
-/// team was deleted.
-pub(super) async fn delete_teams(
-    tx: &mut sqlx::PgConnection,
-    ids: &[Uuid],
-) -> anyhow::Result<bool> {
-    restrict(tx, "team_user", "team_id", IDS, ids).await?;
-    for table in ["website", "link", "pixel", "board"] {
-        set_null(tx, table, "team_id", ids).await?;
-    }
+/// Deletes teams with their memberships, websites, links, pixels and boards
+/// (and those entities' share links). Returns how many teams were deleted.
+///
+/// Upstream's UI warns that deleting a team deletes its websites, but upstream
+/// keeps them, without a team or owner; umami-rs deletes them.
+pub(super) async fn delete_teams(tx: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<u64> {
+    let websites: Vec<Uuid> =
+        sqlx::query_scalar("select website_id from website where team_id = any($1)")
+            .bind(ids)
+            .fetch_all(&mut *tx)
+            .await?;
+    website::purge(tx, &websites).await?;
+
+    delete_owned_entities(tx, "team_id = any($1)", ids).await?;
+    delete_where(tx, "team_user", "team_id", ids).await?;
 
     let deleted = sqlx::query("delete from team where team_id = any($1)")
         .bind(ids)
         .execute(&mut *tx)
         .await?;
 
-    Ok(deleted.rows_affected() > 0)
+    Ok(deleted.rows_affected())
 }
 
-/// Ids of the links, pixels and boards matching `condition` (on `$1`), whose
-/// shares are deleted with them.
-pub(super) async fn owned_entities(
-    db: &PgPool,
+/// Deletes the links, pixels and boards matching `condition` (on `$1`), with
+/// their share links.
+pub(super) async fn delete_owned_entities(
+    tx: &mut PgConnection,
     condition: &str,
     ids: &[Uuid],
-) -> sqlx::Result<Vec<Uuid>> {
-    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "select link_id from link where {condition} \
-         union all select pixel_id from pixel where {condition} \
-         union all select board_id from board where {condition}"
+) -> sqlx::Result<()> {
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "delete from share where entity_id in ( \
+           select link_id from link where {condition} \
+           union all select pixel_id from pixel where {condition} \
+           union all select board_id from board where {condition})"
     )))
     .bind(ids)
-    .fetch_all(db)
-    .await
+    .execute(&mut *tx)
+    .await?;
+
+    for table in ["link", "pixel", "board"] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "delete from {table} where {condition}"
+        )))
+        .bind(ids)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    Ok(())
 }
 
 async fn insert_member(
-    tx: &mut sqlx::PgConnection,
+    tx: &mut PgConnection,
     team_user_id: Uuid,
     user_id: Uuid,
     team_id: Uuid,

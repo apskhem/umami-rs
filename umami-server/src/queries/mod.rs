@@ -1,11 +1,9 @@
 //! Admin data queries, mirroring upstream's `src/queries/prisma`.
 //!
 //! Upstream runs with Prisma's `relationMode = "prisma"`: the database has no
-//! foreign keys (except `api_key`'s), and Prisma emulates them on delete. Required
-//! relations *restrict* (the delete fails while child rows exist), optional ones
-//! *set null* (without touching `updated_at`), and the 2FA and API-key relations
-//! *cascade*. The delete functions here reproduce those effects, so both servers
-//! leave the same rows behind, and refuse the same deletes.
+//! foreign keys (except `api_key`'s), and Prisma emulates them on delete. Where
+//! that leaves upstream refusing a delete or keeping orphaned rows, the delete
+//! functions here remove everything that belongs to what is deleted instead.
 
 pub mod team;
 pub mod user;
@@ -65,22 +63,27 @@ impl Filters {
         self.page.unwrap_or(1)
     }
 
-    /// Search text for `contains` filters. Prisma does not escape `%` or `_`, so
-    /// neither does this.
+    /// An `ilike` pattern matching the search text anywhere, literally.
+    /// (Upstream's Prisma `contains` leaves `%` and `_` as wildcards.)
     fn search_pattern(&self) -> Option<String> {
-        self.search
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .map(|s| format!("%{s}%"))
+        self.search.as_deref().filter(|s| !s.is_empty()).map(|s| {
+            let escaped = s
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            format!("%{escaped}%")
+        })
     }
 
-    /// `order by` for the requested field, or `default` (a trusted SQL fragment).
+    /// `order by` for the requested field, or `default` (a trusted SQL fragment),
+    /// then `key` (the primary key) to break ties, so pages never overlap.
     /// Callers sanitize `orderBy` first, so only known fields reach `column`.
     fn push_order(
         &self,
         builder: &mut QueryBuilder<Postgres>,
         column: fn(&str) -> Option<&'static str>,
-        default: Option<&str>,
+        default: &str,
+        key: &str,
     ) {
         let requested = self.order_by.as_deref().and_then(column).map(|column| {
             let direction = if self.sort_descending == Some(true) {
@@ -91,9 +94,8 @@ impl Filters {
             format!("{column} {direction}")
         });
 
-        if let Some(order) = requested.as_deref().or(default) {
-            builder.push(" order by ").push(order);
-        }
+        let order = requested.as_deref().unwrap_or(default);
+        builder.push(format!(" order by {order}, {key}"));
     }
 
     /// `limit`/`offset` for the requested page (`take`/`skip` in Prisma).
@@ -149,33 +151,6 @@ fn into_map(value: Value) -> Map<String, Value> {
     }
 }
 
-/// Selects the bound ID list (`$1`) as a parent set for [`restrict`].
-const IDS: &str = "select unnest($1::uuid[])";
-
-/// Prisma's emulated `Restrict`: fails the transaction (as upstream's P2014 error
-/// does) when `child` still has rows whose `column` references a parent selected
-/// by `parents` (SQL taking `ids` as `$1`).
-async fn restrict(
-    tx: &mut PgConnection,
-    child: &str,
-    column: &str,
-    parents: &str,
-    ids: &[Uuid],
-) -> anyhow::Result<()> {
-    let referenced: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        r#"select exists(select 1 from "{child}" where {column} in ({parents}))"#
-    )))
-    .bind(ids)
-    .fetch_one(&mut *tx)
-    .await?;
-
-    if referenced {
-        anyhow::bail!("the change would violate the required relation from {child}.{column}");
-    }
-
-    Ok(())
-}
-
 /// Deletes the rows of `table` whose `column` is one of `ids`.
 async fn delete_where(
     tx: &mut PgConnection,
@@ -185,24 +160,6 @@ async fn delete_where(
 ) -> sqlx::Result<()> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
         r#"delete from "{table}" where {column} = any($1)"#
-    )))
-    .bind(ids)
-    .execute(&mut *tx)
-    .await?;
-
-    Ok(())
-}
-
-/// Prisma's emulated `SetNull`: clears `column` of `table` where it references
-/// one of `ids`. Emulation writes the column alone, so `updated_at` is unchanged.
-async fn set_null(
-    tx: &mut PgConnection,
-    table: &str,
-    column: &str,
-    ids: &[Uuid],
-) -> sqlx::Result<()> {
-    sqlx::query(sqlx::AssertSqlSafe(format!(
-        r#"update "{table}" set {column} = null where {column} = any($1)"#
     )))
     .bind(ids)
     .execute(&mut *tx)
@@ -249,5 +206,18 @@ mod tests {
             json!({ "data": [], "count": 0, "page": 2, "pageSize": 20, "search": "" })
         );
         assert_eq!(filters.search_pattern(), None);
+    }
+
+    #[test]
+    fn searches_literally() {
+        let search = |text: &str| {
+            Filters {
+                search: Some(text.to_owned()),
+                ..Filters::default()
+            }
+            .search_pattern()
+        };
+
+        assert_eq!(search("a_b%c\\d").as_deref(), Some("%a\\_b\\%c\\\\d%"));
     }
 }
