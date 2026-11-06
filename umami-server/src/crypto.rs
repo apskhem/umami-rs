@@ -91,6 +91,21 @@ fn utc_string(at: DateTime<Utc>) -> String {
     at.format("%a, %d %b %Y %H:%M:%S GMT").to_string()
 }
 
+/// Upstream's `getRandomChars`: alphanumeric characters from a CSPRNG.
+pub fn random_chars(n: usize) -> String {
+    const CHARS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let mut bytes = vec![0u8; n * 4];
+    getrandom::fill(&mut bytes).expect("system randomness");
+
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| {
+            let value = u32::from_le_bytes(chunk.try_into().unwrap());
+            char::from(CHARS[value as usize % CHARS.len()])
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

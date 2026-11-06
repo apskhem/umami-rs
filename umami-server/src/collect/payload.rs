@@ -145,7 +145,9 @@ impl Payload {
 
         let uuid = |name: &str| -> Result<Option<Uuid>, Invalid> {
             string(name)?
-                .map(|s| parse_uuid(&s).ok_or_else(|| invalid(format!("{name} must be a UUID"))))
+                .map(|s| {
+                    crate::zod::uuid(&s).ok_or_else(|| invalid(format!("{name} must be a UUID")))
+                })
                 .transpose()
         };
 
@@ -217,32 +219,6 @@ impl Payload {
 
 pub fn localhost() -> url::Url {
     url::Url::parse("https://localhost").expect("valid URL")
-}
-
-/// zod 4's `z.uuid()`: hyphenated, RFC 9562 variant, version 1–8 (or the nil/max UUIDs).
-fn parse_uuid(s: &str) -> Option<Uuid> {
-    let bytes = s.as_bytes();
-    let well_formed = bytes.len() == 36
-        && bytes.iter().enumerate().all(|(i, b)| match i {
-            8 | 13 | 18 | 23 => *b == b'-',
-            _ => b.is_ascii_hexdigit(),
-        });
-
-    if !well_formed {
-        return None;
-    }
-
-    let lower = s.to_ascii_lowercase();
-    let special = lower == "00000000-0000-0000-0000-000000000000"
-        || lower == "ffffffff-ffff-ffff-ffff-ffffffffffff";
-    let versioned = matches!(bytes[14], b'1'..=b'8')
-        && matches!(lower.as_bytes()[19], b'8' | b'9' | b'a' | b'b');
-
-    if special || versioned {
-        Uuid::parse_str(s).ok()
-    } else {
-        None
-    }
 }
 
 /// `z.coerce.number().int()`: `Number(value)` must be a safe integer.
@@ -345,18 +321,5 @@ mod tests {
         assert_eq!(coerce_int(&json!(true)).unwrap(), 1);
         assert_eq!(coerce_int(&json!(5.0)).unwrap(), 5);
         assert!(coerce_int(&json!(1e300)).is_err());
-    }
-
-    #[test]
-    fn uuid_format_matches_zod() {
-        assert!(parse_uuid(WEBSITE).is_some());
-        assert!(parse_uuid(&WEBSITE.to_uppercase()).is_some());
-        assert!(parse_uuid("00000000-0000-0000-0000-000000000000").is_some());
-        // Version 0 and non-RFC variants are rejected.
-        assert!(parse_uuid("0d8e3a5c-1f2b-0c3d-9e4f-5a6b7c8d9e0f").is_none());
-        assert!(parse_uuid("0d8e3a5c-1f2b-4c3d-1e4f-5a6b7c8d9e0f").is_none());
-        // Forms the uuid crate accepts but zod does not.
-        assert!(parse_uuid("0d8e3a5c1f2b4c3d9e4f5a6b7c8d9e0f").is_none());
-        assert!(parse_uuid("{0d8e3a5c-1f2b-4c3d-9e4f-5a6b7c8d9e0f}").is_none());
     }
 }

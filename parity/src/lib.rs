@@ -280,6 +280,39 @@ impl Stack {
             .await
     }
 
+    /// A new user with `role`, signed in on both servers; returns the user and
+    /// their (upstream, rs) session tokens.
+    pub async fn session(&self, role: &str) -> (TestUser, [String; 2]) {
+        let user = self.create_user(role).await;
+        let (upstream, rs) = self.login(&user.username, "umami").await;
+
+        (user, [token(&upstream), token(&rs)])
+    }
+
+    /// Sends the same request to both servers, each with its own session token
+    /// (`tokens` as returned by [`Stack::session`]); returns (upstream, rs).
+    pub async fn call_as(
+        &self,
+        tokens: &[String; 2],
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> (Response, Response) {
+        let [upstream, rs] = tokens.clone().map(|t| bearer(&t));
+        (
+            self.call(
+                &self.upstream,
+                method.clone(),
+                path,
+                &[("authorization", &upstream)],
+                body,
+            )
+            .await,
+            self.call(&self.rs, method, path, &[("authorization", &rs)], body)
+                .await,
+        )
+    }
+
     /// Both servers, for setting up identical data in each database.
     pub fn targets(&self) -> [&Target; 2] {
         [&self.upstream, &self.rs]
@@ -356,6 +389,77 @@ pub fn assert_same(upstream: &Response, rs: &Response, ignore: &[&str], context:
         strip(&rs.body),
         "{context}: body differs"
     );
+}
+
+/// Asserts two responses are equivalent once `normalize` has replaced the values
+/// each server generates itself (IDs, timestamps, access codes).
+pub fn assert_same_by(
+    upstream: &Response,
+    rs: &Response,
+    normalize: impl Fn(&mut Value),
+    context: &str,
+) {
+    let (mut u, mut r) = (upstream.clone(), rs.clone());
+    normalize(&mut u.body);
+    normalize(&mut r.body);
+
+    assert_same(&u, &r, &[], context);
+}
+
+/// Replaces non-null values of `keys`, at any depth, with a placeholder (so a
+/// value being present or `null` still has to match).
+pub fn mask(value: &mut Value, keys: &[&str]) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object.iter_mut() {
+                if keys.contains(&key.as_str()) && !value.is_null() {
+                    *value = Value::String("<masked>".to_owned());
+                } else {
+                    mask(value, keys);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(|item| mask(item, keys)),
+        _ => {}
+    }
+}
+
+impl Target {
+    /// The rows of `sql` (which may use the UUID array `$1`) as JSON objects.
+    pub async fn snapshot(&self, sql: &str, ids: &[Uuid]) -> Value {
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "select coalesce(jsonb_agg(to_jsonb(t)), '[]') from ({sql}) t"
+        )))
+        .bind(ids)
+        .fetch_one(&self.db)
+        .await
+        .unwrap_or_else(|e| panic!("{}: {sql}: {e}", self.name))
+    }
+}
+
+impl Stack {
+    /// Asserts both databases return the same rows for `sql` (see [`Target::snapshot`]).
+    pub async fn assert_same_snapshot(&self, sql: &str, ids: &[Uuid], context: &str) -> Value {
+        let upstream = self.upstream.snapshot(sql, ids).await;
+        let rs = self.rs.snapshot(sql, ids).await;
+
+        assert_eq!(upstream, rs, "{context}: rows differ for {sql}");
+        upstream
+    }
+
+    /// Runs the `;`-separated statements of `sql` (which may use the UUID array
+    /// `$1`) on both databases.
+    pub async fn execute(&self, sql: &str, ids: &[Uuid]) {
+        for target in self.targets() {
+            for statement in sql.split(';').filter(|s| !s.trim().is_empty()) {
+                sqlx::query(sqlx::AssertSqlSafe(statement.to_owned()))
+                    .bind(ids)
+                    .execute(&target.db)
+                    .await
+                    .unwrap_or_else(|e| panic!("{}: {statement}: {e}", target.name));
+            }
+        }
+    }
 }
 
 /// Claims of a cache token, minus its issue time (which depends on when each server

@@ -81,6 +81,26 @@ Differences from upstream: the 2FA setup QR code is an SVG rather than a PNG (sa
 code); a non-numeric 2FA code is rejected as invalid (upstream errors with 500); and
 malformed IDs in paths return 404 (upstream errors with 500).
 
+## Users, teams and websites
+
+User administration (`/api/users/*`, `/api/admin/users`), teams and their members
+(`/api/teams/*`, `/api/me/teams`, `/api/admin/teams`) and website management
+(`/api/websites`, `/api/websites/{id}` with `reset` and `transfer`, `/api/me/websites`,
+`/api/admin/websites`) behave as upstream's, with the same roles and permissions,
+paging, sorting and search.
+
+Upstream runs Prisma with `relationMode = "prisma"`, which emulates foreign keys
+when rows are deleted, and umami-rs reproduces those effects. Deleting a team keeps
+its websites but clears their `team_id`. Deleting a user clears `created_by` on
+websites they created for other teams. As upstream does, deleting a user fails with
+a 500 and changes nothing while their websites still have revenue, segments,
+annotations, replays or heatmap data.
+
+Differences from upstream: deleting, resetting or transferring a user, team or
+website that does not exist returns 404, where upstream errors with 500. Routes that
+need a signed-in user return 401 to share-link visitors, where upstream errors
+with 500.
+
 ## Tracker script
 
 `/script.js` serves upstream's tracker exactly as the v3.4.1 release image ships it,

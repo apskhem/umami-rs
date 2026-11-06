@@ -2,8 +2,11 @@
 
 use axum::body::Bytes;
 use serde_json::{Map, Value};
+use uuid::Uuid;
 
+use crate::collect::js;
 use crate::error::AppError;
+use crate::zod;
 
 /// The JSON body, whatever the content type (as upstream's `request.json()`);
 /// malformed bodies are `null`, which no schema accepts.
@@ -22,6 +25,59 @@ pub fn string<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a str, 
         .get(key)
         .and_then(Value::as_str)
         .ok_or_else(AppError::bad_request)
+}
+
+/// An optional string field (`z.string().optional()`): absent is `None`, but
+/// `null` is invalid.
+pub fn optional_string<'a>(
+    object: &'a Map<String, Value>,
+    key: &str,
+) -> Result<Option<&'a str>, AppError> {
+    match object.get(key) {
+        None => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(_) => Err(AppError::bad_request()),
+    }
+}
+
+/// A nullable, optional string field (`.nullable().optional()`): absent is
+/// `None`, `null` is `Some(None)`.
+pub fn nullable_string<'a>(
+    object: &'a Map<String, Value>,
+    key: &str,
+) -> Result<Option<Option<&'a str>>, AppError> {
+    match object.get(key) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(s)) => Ok(Some(Some(s))),
+        Some(_) => Err(AppError::bad_request()),
+    }
+}
+
+/// A `z.uuid()` value.
+pub fn uuid(value: &str) -> Result<Uuid, AppError> {
+    zod::uuid(value).ok_or_else(AppError::bad_request)
+}
+
+/// Fails unless `value` is at most `max` characters (`z.string().max(max)`).
+pub fn max_len(value: &str, max: usize) -> Result<&str, AppError> {
+    if js_len(value) > max {
+        return Err(AppError::bad_request());
+    }
+    Ok(value)
+}
+
+/// Fails unless `value` is one of `allowed` (`z.enum([...])`).
+pub fn one_of<'a>(value: &'a str, allowed: &[&str]) -> Result<&'a str, AppError> {
+    if !allowed.contains(&value) {
+        return Err(AppError::bad_request());
+    }
+    Ok(value)
+}
+
+/// zod's `.trim()`: JavaScript's `String.prototype.trim`.
+pub fn trim(value: &str) -> &str {
+    value.trim_matches(js::is_js_whitespace)
 }
 
 /// A required boolean field.

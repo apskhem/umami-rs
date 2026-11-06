@@ -10,12 +10,17 @@ use crate::config::Config;
 use crate::state::AppState;
 use crate::tracker::TrackerScript;
 
+mod admin;
 mod auth;
 mod body;
 mod config;
 mod heartbeat;
 mod me;
+mod params;
+mod teams;
 mod two_factor;
+mod users;
+mod websites;
 
 /// Routes relative to `BASE_PATH`. API paths mirror upstream's `src/app/api/**/route.ts`.
 pub fn router(config: &Config) -> Router<AppState> {
@@ -33,6 +38,47 @@ pub fn router(config: &Config) -> Router<AppState> {
             get(me::list_api_keys).post(me::create_api_key),
         )
         .route("/api/me/api-keys/{keyId}", delete(me::delete_api_key))
+        .route("/api/me/teams", get(me::teams))
+        .route("/api/me/websites", get(me::websites))
+        .route("/api/users", post(users::create))
+        .route(
+            "/api/users/{userId}",
+            get(users::get).post(users::update).delete(users::delete),
+        )
+        .route("/api/users/{userId}/teams", get(users::teams))
+        .route("/api/users/{userId}/websites", get(users::websites))
+        .route("/api/teams", get(teams::list).post(teams::create))
+        .route("/api/teams/join", post(teams::join))
+        .route(
+            "/api/teams/{teamId}",
+            get(teams::get).post(teams::update).delete(teams::delete),
+        )
+        .route(
+            "/api/teams/{teamId}/users",
+            get(teams::members).post(teams::add_member),
+        )
+        .route(
+            "/api/teams/{teamId}/users/{userId}",
+            get(teams::member)
+                .post(teams::update_member)
+                .delete(teams::remove_member),
+        )
+        .route("/api/teams/{teamId}/websites", get(teams::websites))
+        .route("/api/websites", get(websites::list).post(websites::create))
+        .route(
+            "/api/websites/{websiteId}",
+            get(websites::get)
+                .post(websites::update)
+                .delete(websites::delete),
+        )
+        .route("/api/websites/{websiteId}/reset", post(websites::reset))
+        .route(
+            "/api/websites/{websiteId}/transfer",
+            post(websites::transfer),
+        )
+        .route("/api/admin/users", get(admin::users))
+        .route("/api/admin/teams", get(admin::teams))
+        .route("/api/admin/websites", get(admin::websites))
         .route("/api/2fa/status", get(two_factor::status))
         .route("/api/2fa/setup/initiate", post(two_factor::initiate))
         .route("/api/2fa/setup/confirm", post(two_factor::confirm))

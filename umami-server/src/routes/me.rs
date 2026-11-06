@@ -2,22 +2,54 @@
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use super::body;
+use super::params::{PAGING_SORTING, Params};
+use super::users::website_scope;
 use crate::auth::{Auth, password, store};
 use crate::crypto;
 use crate::error::{AppError, AppResult};
 use crate::json as js;
+use crate::queries::{team, website};
 use crate::state::AppState;
 
 /// `GET /api/me`: the caller's auth context.
 pub async fn get(auth: Auth) -> Json<Value> {
     Json(auth.to_json())
+}
+
+/// `GET /api/me/teams`
+pub async fn teams(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    auth: AppResult<Auth>,
+) -> AppResult<Json<Value>> {
+    let filters = Params::parse(query.as_deref()).filters(PAGING_SORTING)?;
+    let user_id = auth?.user()?.id;
+
+    Ok(Json(
+        team::list(&state.db, team::Scope::Member(user_id), filters).await?,
+    ))
+}
+
+/// `GET /api/me/websites`: like `/api/websites`, without search.
+pub async fn websites(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    auth: AppResult<Auth>,
+) -> AppResult<Json<Value>> {
+    let params = Params::parse(query.as_deref());
+    let filters = params.filters(PAGING_SORTING)?;
+    let user_id = auth?.user()?.id;
+
+    let scope = website_scope(&params, user_id);
+
+    Ok(Json(website::list(&state.db, scope, filters).await?))
 }
 
 /// `POST /api/me/password`. Changing the password also signs the user out
@@ -110,7 +142,7 @@ pub async fn create_api_key(
     }
     let user_id = auth?.user()?.id;
 
-    let key = format!("{API_KEY_PREFIX}{}", random_chars(API_KEY_LENGTH));
+    let key = format!("{API_KEY_PREFIX}{}", crypto::random_chars(API_KEY_LENGTH));
     let id = crypto::random_uuid(state.config.collect.use_uuidv7);
 
     let created_at: Option<DateTime<Utc>> = sqlx::query_scalar(
@@ -154,19 +186,4 @@ pub async fn delete_api_key(
     }
 
     Ok(Json(json!({ "ok": true })))
-}
-
-/// Upstream's `getRandomChars`: alphanumeric characters from a CSPRNG.
-fn random_chars(n: usize) -> String {
-    const CHARS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    let mut bytes = vec![0u8; n * 4];
-    getrandom::fill(&mut bytes).expect("system randomness");
-
-    bytes
-        .chunks_exact(4)
-        .map(|chunk| {
-            let value = u32::from_le_bytes(chunk.try_into().unwrap());
-            char::from(CHARS[value as usize % CHARS.len()])
-        })
-        .collect()
 }

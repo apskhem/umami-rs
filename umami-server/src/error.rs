@@ -53,6 +53,11 @@ impl AppError {
         }
     }
 
+    /// A 401 with a custom message, as upstream's `unauthorized({ message })`.
+    pub fn unauthorized_message(message: &str) -> Self {
+        Self::coded(StatusCode::UNAUTHORIZED, "unauthorized", message)
+    }
+
     /// A coded error, as upstream's `badRequest({ code, message })` and friends.
     pub fn coded(status: StatusCode, code: &'static str, message: &str) -> Self {
         Self::Coded {

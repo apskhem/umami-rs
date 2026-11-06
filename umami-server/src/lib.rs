@@ -8,10 +8,13 @@ pub mod error;
 pub mod healthcheck;
 pub mod json;
 pub mod jwt;
+pub mod permissions;
+pub mod queries;
 mod routes;
 pub mod startup;
 pub mod state;
 pub mod tracker;
+pub mod zod;
 
 use axum::Router;
 use axum::middleware;
