@@ -1,7 +1,8 @@
 use anyhow::Context;
 use sqlx::{Connection, PgConnection};
 
-use crate::config::Config;
+use crate::collect::GeoDatabase;
+use crate::config::{CollectConfig, Config};
 
 /// Startup database check, mirroring upstream's `scripts/check-db.js`: verify
 /// connectivity and the Postgres version, then apply pending migrations.
@@ -34,6 +35,26 @@ pub async fn prepare_database(config: &Config) -> anyhow::Result<()> {
     conn.close().await?;
 
     Ok(())
+}
+
+/// Opens the MaxMind database for geolocation. Without one, locations come only from
+/// CDN headers; that is an error only if `GEOLITE_DB_PATH` names a missing file.
+pub fn open_geo_database(config: &CollectConfig) -> anyhow::Result<Option<GeoDatabase>> {
+    let path = &config.geo_database;
+
+    if !path.exists() && !config.geo_database_explicit {
+        tracing::info!(
+            path = %path.display(),
+            "no GeoLite2 database; geolocation will use CDN headers only",
+        );
+        return Ok(None);
+    }
+
+    let database = GeoDatabase::open(path)
+        .with_context(|| format!("unable to open GeoLite2 database {}", path.display()))?;
+    tracing::info!(path = %path.display(), "loaded GeoLite2 database");
+
+    Ok(Some(database))
 }
 
 /// Resolves on Ctrl-C or, on Unix, SIGTERM.

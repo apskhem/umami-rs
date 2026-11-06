@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -36,14 +37,21 @@ async fn main() -> anyhow::Result<()> {
         "listening",
     );
 
+    let geo = startup::open_geo_database(&config.collect)?;
+    umami_server::collect::ua::init();
+
     let state = AppState {
         db,
         config: Arc::new(config),
+        geo: geo.map(Arc::new),
     };
 
-    axum::serve(listener, app(state))
-        .with_graceful_shutdown(startup::shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(startup::shutdown_signal())
+    .await?;
 
     Ok(())
 }

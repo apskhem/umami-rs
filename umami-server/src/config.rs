@@ -1,6 +1,9 @@
 use std::fmt;
+use std::path::PathBuf;
 
-use crate::crypto;
+use ipnet::IpNet;
+
+use crate::crypto::{self, SaltRotation};
 
 /// Server configuration, read from the same environment variables as upstream Umami
 /// where an equivalent exists.
@@ -24,6 +27,42 @@ pub struct Config {
     pub skip_db_check: bool,
     /// `SKIP_DB_MIGRATION`: skip startup migrations.
     pub skip_db_migration: bool,
+    /// `CORS_MAX_AGE` (default `86400`): `Access-Control-Max-Age` for API responses.
+    pub cors_max_age: String,
+    pub collect: CollectConfig,
+}
+
+/// Settings for event collection (`/api/send`).
+#[derive(Clone, Debug)]
+pub struct CollectConfig {
+    /// `COLLECT_API_ENDPOINT`: an additional path that serves `/api/send`.
+    pub endpoint_alias: Option<String>,
+    /// `DISABLE_BOT_CHECK`
+    pub disable_bot_check: bool,
+    /// `IGNORE_IP`: comma-separated addresses and CIDR ranges to drop.
+    pub ignore_ips: Vec<IgnoredIp>,
+    /// `CLIENT_IP_HEADER`: header to read the client IP from, ahead of the defaults.
+    pub client_ip_header: Option<String>,
+    /// `SALT_ROTATION` (`day`, `week` or default `month`).
+    pub salt_rotation: SaltRotation,
+    /// `REMOVE_TRAILING_SLASH`
+    pub remove_trailing_slash: bool,
+    /// `SKIP_LOCATION_HEADERS`: ignore CDN geolocation headers.
+    pub skip_location_headers: bool,
+    /// `GEOLITE_DB_PATH`, or upstream's default `geo/GeoLite2-City.mmdb`.
+    pub geo_database: PathBuf,
+    /// Whether `GEOLITE_DB_PATH` was set (a missing explicit file is an error).
+    pub geo_database_explicit: bool,
+    /// `USE_UUIDV7`: generate v7 rather than v4 event IDs.
+    pub use_uuidv7: bool,
+}
+
+/// An `IGNORE_IP` entry. Upstream compares the client IP to each entry as a string,
+/// and also tests containment for entries that parse as CIDR ranges.
+#[derive(Clone, Debug)]
+pub struct IgnoredIp {
+    pub entry: String,
+    pub range: Option<IpNet>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +96,37 @@ impl Config {
             None => 3000,
         };
 
+        let collect = CollectConfig {
+            endpoint_alias: get("COLLECT_API_ENDPOINT")
+                .map(|path| format!("/{}", path.trim_start_matches('/'))),
+            disable_bot_check: get("DISABLE_BOT_CHECK").is_some(),
+            ignore_ips: get("IGNORE_IP")
+                .map(|value| {
+                    value
+                        .split(',')
+                        .map(|entry| IgnoredIp {
+                            entry: entry.trim().to_owned(),
+                            range: entry
+                                .trim()
+                                .find('/')
+                                .filter(|&slash| slash > 0)
+                                .and_then(|_| entry.trim().parse().ok()),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            client_ip_header: get("CLIENT_IP_HEADER").map(|name| name.to_ascii_lowercase()),
+            salt_rotation: get("SALT_ROTATION")
+                .map(|value| SaltRotation::parse(&value))
+                .unwrap_or_default(),
+            remove_trailing_slash: get("REMOVE_TRAILING_SLASH").is_some(),
+            skip_location_headers: get("SKIP_LOCATION_HEADERS").is_some(),
+            geo_database_explicit: get("GEOLITE_DB_PATH").is_some(),
+            geo_database: get("GEOLITE_DB_PATH")
+                .map_or_else(|| PathBuf::from("geo/GeoLite2-City.mmdb"), PathBuf::from),
+            use_uuidv7: get("USE_UUIDV7").is_some(),
+        };
+
         Ok(Self {
             direct_database_url: get("DIRECT_DATABASE_URL"),
             secret,
@@ -65,6 +135,8 @@ impl Config {
             base_path: normalize_base_path(get("BASE_PATH").as_deref().unwrap_or("")),
             skip_db_check: get("SKIP_DB_CHECK").is_some(),
             skip_db_migration: get("SKIP_DB_MIGRATION").is_some(),
+            cors_max_age: get("CORS_MAX_AGE").unwrap_or_else(|| "86400".to_owned()),
+            collect,
             database_url,
         })
     }
@@ -91,6 +163,8 @@ impl fmt::Debug for Config {
             .field("base_path", &self.base_path)
             .field("skip_db_check", &self.skip_db_check)
             .field("skip_db_migration", &self.skip_db_migration)
+            .field("cors_max_age", &self.cors_max_age)
+            .field("collect", &self.collect)
             .finish()
     }
 }
@@ -187,6 +261,37 @@ mod tests {
             config(&[("DATABASE_URL", "x"), ("PORT", "http")]),
             Err(ConfigError::Invalid { name: "PORT", .. })
         ));
+    }
+
+    #[test]
+    fn collect_settings() {
+        let config = config(&[
+            ("DATABASE_URL", "postgresql://localhost/umami"),
+            ("IGNORE_IP", "203.0.113.7, 10.0.0.0/8,bad/cidr"),
+            ("CLIENT_IP_HEADER", "X-Client-IP"),
+            ("SALT_ROTATION", "week"),
+            ("COLLECT_API_ENDPOINT", "collect"),
+        ])
+        .unwrap();
+        let collect = &config.collect;
+
+        assert_eq!(collect.ignore_ips.len(), 3);
+        assert_eq!(collect.ignore_ips[0].entry, "203.0.113.7");
+        assert!(collect.ignore_ips[0].range.is_none());
+        assert_eq!(
+            collect.ignore_ips[1].range.unwrap().to_string(),
+            "10.0.0.0/8"
+        );
+        assert!(collect.ignore_ips[2].range.is_none());
+        assert_eq!(collect.client_ip_header.as_deref(), Some("x-client-ip"));
+        assert_eq!(collect.salt_rotation, SaltRotation::Week);
+        assert_eq!(collect.endpoint_alias.as_deref(), Some("/collect"));
+        assert_eq!(
+            collect.geo_database,
+            PathBuf::from("geo/GeoLite2-City.mmdb")
+        );
+        assert!(!collect.geo_database_explicit);
+        assert_eq!(config.cors_max_age, "86400");
     }
 
     #[test]

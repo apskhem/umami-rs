@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde_json::json;
+use serde_json::{Value, json};
 
 /// An API error, rendered with upstream's envelope (`src/lib/response.ts`):
 /// `{"error": {"message": ..., "code": ..., "status": ...}}`.
@@ -63,8 +63,10 @@ impl From<sqlx::Error> for AppError {
     }
 }
 
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
+impl AppError {
+    /// The status and JSON body this error renders as. Internal errors are logged
+    /// here, since their details are not sent to the client.
+    pub fn into_parts(self) -> (StatusCode, Value) {
         let status = self.status();
         let message = match &self {
             Self::Internal(error) => {
@@ -82,6 +84,14 @@ impl IntoResponse for AppError {
             }
         });
 
+        (status, body)
+    }
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let (status, body) = self.into_parts();
+
         (status, Json(body)).into_response()
     }
 }
@@ -89,7 +99,6 @@ impl IntoResponse for AppError {
 #[cfg(test)]
 mod tests {
     use http_body_util::BodyExt;
-    use serde_json::Value;
 
     use super::*;
 
