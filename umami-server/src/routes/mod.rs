@@ -61,6 +61,7 @@ mod reports;
 mod segments;
 mod shares;
 mod teams;
+mod telemetry;
 mod two_factor;
 mod users;
 mod websites;
@@ -73,6 +74,7 @@ fn ok() -> Json<Value> {
 /// Routes relative to `BASE_PATH`. API paths mirror upstream's `src/app/api/**/route.ts`.
 pub fn router(config: &Config) -> Router<AppState> {
   let mut router = Router::new()
+    .route("/api/scripts/telemetry", get(telemetry::script))
     .route("/api/heartbeat", get(heartbeat::get))
     .route("/api/config", get(config::get))
     .route("/api/auth/login", post(auth::login))
@@ -409,11 +411,11 @@ pub fn router(config: &Config) -> Router<AppState> {
   }
 
   // A tracker alias of the same name takes precedence, as upstream's rewrite does.
-  if !config
-    .tracker_script_aliases
-    .iter()
-    .any(|alias| alias == "/recorder.js")
-  {
+  let is_alias = |path: &str| config.tracker_script_aliases.iter().any(|alias| alias == path);
+  if !is_alias("/telemetry.js") {
+    router = router.route("/telemetry.js", get(telemetry::script));
+  }
+  if !is_alias("/recorder.js") {
     let recorder = TrackerScript::recorder();
     router = router.route(
       "/recorder.js",

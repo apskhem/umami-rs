@@ -350,6 +350,11 @@ as with upstream:
 To track a newer upstream release, run `python3 tools/tracker/fetch.py <version>`
 and update `SCRIPT_SHA256` and `RECORDER_SHA256` in `umami-server/src/tracker.rs`.
 
+`/telemetry.js` (also `/api/scripts/telemetry`), which the dashboard loads on
+every page, is upstream's anonymous usage ping: a script that loads a 1×1 image
+from `i.umami.is` carrying the Umami version (3.4.1), or a script that does nothing when
+`DISABLE_TELEMETRY` or `PRIVATE_MODE` is set.
+
 Not supported: `TRACKER_SCRIPT_URL` (proxying the script from elsewhere) and
 `COLLECT_API_HOST` (a build-time option upstream; use `data-host-url` instead).
 
@@ -363,10 +368,8 @@ None of these are used by the dashboard against a self-hosted server:
   against the v2 API get a 404.
 - `/api/auth/subscription`: Umami Cloud billing. The dashboard asks for it only
   in cloud mode, which `/api/config` never reports.
-- `/telemetry.js` (`/api/scripts/telemetry`): upstream's anonymous usage ping.
-  The server behaves as if `DISABLE_TELEMETRY` were set, except that the script
-  is a 404 rather than an empty one.
-- `/mcp`: upstream's Model Context Protocol server for AI assistants.
+- `/mcp`: upstream's Model Context Protocol server for AI assistants, which is
+  off (a 404) unless `MCP_ENABLED=1`.
 
 ## Configuration
 

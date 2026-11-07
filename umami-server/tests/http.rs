@@ -908,3 +908,43 @@ async fn export_validates_before_auth() {
     );
   }
 }
+
+#[tokio::test]
+async fn serves_the_telemetry_script() {
+  // Upstream's template as Node renders it.
+  let enabled = "(()=>{const i=document.createElement('img');i.setAttribute('src','https://i.umami.is/a.png?v=3.4.1');\
+                 i.setAttribute('style','width:0;height:0;position:absolute;pointer-events:none;');\
+                 document.body.appendChild(i);})();";
+  let disabled = "/* telemetry disabled */";
+
+  for (vars, body) in [
+    (vec![], enabled),
+    (vec![("DISABLE_TELEMETRY", "")], enabled),
+    (vec![("DISABLE_TELEMETRY", "1")], disabled),
+    (vec![("PRIVATE_MODE", "true")], disabled),
+  ] {
+    for path in ["/telemetry.js", "/api/scripts/telemetry"] {
+      let (status, headers, response) = get_script(state_with(&vars), path, &[]).await;
+      assert_eq!(status, StatusCode::OK, "{path} {vars:?}");
+      assert_eq!(response, Value::String(body.to_owned()), "{path} {vars:?}");
+      assert_eq!(headers["content-type"], "text/javascript", "{path}");
+      // Only the API path gets the API headers.
+      assert_eq!(
+        headers.get("cache-control").map(|v| v.to_str().unwrap()),
+        (path != "/telemetry.js").then_some("no-cache"),
+        "{path}"
+      );
+    }
+  }
+
+  let (status, _, _) = get_script(state("/analytics"), "/analytics/telemetry.js", &[]).await;
+  assert_eq!(status, StatusCode::OK);
+  // A tracker alias of the same name serves the tracker instead.
+  let (_, _, body) = get_script(
+    state_with(&[("TRACKER_SCRIPT_NAME", "telemetry.js")]),
+    "/telemetry.js",
+    &[],
+  )
+  .await;
+  assert_eq!(body, Value::String(TRACKER.to_owned()));
+}
