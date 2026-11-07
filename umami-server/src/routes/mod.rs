@@ -29,6 +29,10 @@ use serde_json::{
   json,
 };
 
+use self::links::{
+  Links,
+  Pixels,
+};
 use crate::collect;
 use crate::config::Config;
 use crate::state::AppState;
@@ -40,6 +44,7 @@ mod auth;
 mod body;
 mod config;
 mod heartbeat;
+mod links;
 mod me;
 pub(crate) mod params;
 mod segments;
@@ -164,6 +169,34 @@ pub fn router(config: &Config) -> Router<AppState> {
         .delete(two_factor::reset_user),
     )
     .route("/api/admin/teams/{teamId}/2fa", post(two_factor::set_team))
+    .route("/api/links", get(links::list::<Links>).post(links::create::<Links>))
+    .route("/api/links/charts", get(links::charts::<Links>))
+    .route(
+      "/api/links/{linkId}",
+      get(links::get::<Links>)
+        .post(links::update::<Links>)
+        .delete(links::delete::<Links>),
+    )
+    .route(
+      "/api/links/{linkId}/shares",
+      get(links::share_list::<Links>).post(links::share_create::<Links>),
+    )
+    .route("/api/teams/{teamId}/links", get(links::team_list::<Links>))
+    .route("/api/pixels", get(links::list::<Pixels>).post(links::create::<Pixels>))
+    .route("/api/pixels/charts", get(links::charts::<Pixels>))
+    .route(
+      "/api/pixels/{pixelId}",
+      get(links::get::<Pixels>)
+        .post(links::update::<Pixels>)
+        .delete(links::delete::<Pixels>),
+    )
+    .route(
+      "/api/pixels/{pixelId}/shares",
+      get(links::share_list::<Pixels>).post(links::share_create::<Pixels>),
+    )
+    .route("/api/teams/{teamId}/pixels", get(links::team_list::<Pixels>))
+    .route("/q/{slug}", get(collect::link))
+    .route("/p/{slug}", get(collect::pixel))
     .route("/api/send", post(collect::send))
     .route("/api/batch", post(collect::batch));
 

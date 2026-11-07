@@ -304,7 +304,7 @@ pub async fn can_access_entity(db: &PgPool, auth: &Auth, entity_id: &str, permis
 
 /// Upstream's `canViewLink` and `canViewPixel`: admins, share links naming
 /// it, its owner or its team's members.
-async fn can_view_link_or_pixel(db: &PgPool, auth: &Auth, kind: EntityType, id: &str) -> AppResult<bool> {
+pub async fn can_view_link_or_pixel(db: &PgPool, auth: &Auth, kind: EntityType, id: &str) -> AppResult<bool> {
   if is_admin(auth) {
     return Ok(true);
   }
@@ -337,6 +337,29 @@ pub async fn can_view_link(db: &PgPool, auth: &Auth, link_id: &str) -> AppResult
 
 pub async fn can_view_pixel(db: &PgPool, auth: &Auth, pixel_id: &str) -> AppResult<bool> {
   can_view_link_or_pixel(db, auth, EntityType::Pixel, pixel_id).await
+}
+
+/// Upstream's `canUpdateLink`/`canUpdatePixel` (`website:update`) and
+/// `canDeleteLink`/`canDeletePixel` (`website:delete`): admins, the owner, or
+/// team members whose role permits it.
+pub async fn can_change_link_or_pixel(
+  db: &PgPool,
+  auth: &Auth,
+  kind: EntityType,
+  id: &str,
+  permission: &str,
+) -> AppResult<bool> {
+  let Some(user) = &auth.user else {
+    return Ok(false);
+  };
+  if user.is_admin {
+    return Ok(true);
+  }
+
+  match owner(db, kind, db_id(id)?).await? {
+    Some(owner) => owner.permits(db, user.id, Some(permission)).await,
+    None => Ok(false),
+  }
 }
 
 // Websites

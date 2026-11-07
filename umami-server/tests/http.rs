@@ -419,3 +419,90 @@ async fn share_and_segment_routes_validate_before_auth() {
     );
   }
 }
+
+#[tokio::test]
+async fn link_and_pixel_routes_validate_before_auth() {
+  let slug = "parity-slug";
+  for (uri, body) in [
+    ("/api/links", json!({ "name": "n", "slug": slug })),
+    ("/api/links", json!({ "name": "n", "url": "u", "slug": "short" })),
+    (
+      "/api/links",
+      json!({ "name": "n".repeat(101), "url": "u", "slug": slug }),
+    ),
+    (
+      "/api/links",
+      json!({ "name": "n", "url": "u".repeat(501), "slug": slug }),
+    ),
+    (
+      "/api/links",
+      json!({ "name": "n", "url": "u", "slug": slug, "teamId": "team" }),
+    ),
+    ("/api/pixels", json!({ "name": "n", "slug": slug, "id": "x" })),
+    (&format!("/api/links/{WEBSITE}"), json!({ "url": null })),
+    (&format!("/api/pixels/{WEBSITE}"), json!({ "slug": "short" })),
+    (&format!("/api/links/{WEBSITE}/shares"), json!({ "name": 1 })),
+  ] {
+    assert_eq!(
+      post(state(""), uri, &[], body.clone()).await,
+      (StatusCode::BAD_REQUEST, bad_request()),
+      "{uri} {body}"
+    );
+  }
+  for uri in [
+    "/api/links/charts".to_owned(),
+    "/api/links/charts?ids=x".to_owned(),
+    format!("/api/pixels/charts?ids={WEBSITE}&startAt=1.5"),
+    format!("/api/links?pageSize=0"),
+    format!("/api/teams/{WEBSITE}/pixels?sortDescending=yes"),
+    format!("/api/links/{WEBSITE}/shares?segment=x"),
+  ] {
+    assert_eq!(
+      get(state(""), &uri).await,
+      (StatusCode::BAD_REQUEST, bad_request()),
+      "{uri}"
+    );
+  }
+
+  // Valid requests without credentials never reach the database; a pixel
+  // ignores the URL it has no use for.
+  for (uri, body) in [
+    (
+      "/api/links".to_owned(),
+      json!({ "name": "", "url": "u", "slug": slug, "teamId": null, "id": null }),
+    ),
+    (
+      "/api/pixels".to_owned(),
+      json!({ "name": "n", "slug": slug, "url": null }),
+    ),
+    (format!("/api/pixels/{WEBSITE}"), json!({ "url": null })),
+    (format!("/api/links/{WEBSITE}/shares"), json!({ "name": "n" })),
+  ] {
+    assert_eq!(
+      post(state(""), &uri, &[], body).await,
+      (StatusCode::UNAUTHORIZED, unauthorized()),
+      "{uri}"
+    );
+  }
+  for uri in [
+    format!("/api/links/charts?ids={WEBSITE},{WEBSITE}&startAt=0&endAt=1"),
+    "/api/pixels".to_owned(),
+    format!("/api/links/{WEBSITE}"),
+    format!("/api/pixels/{WEBSITE}/shares"),
+    format!("/api/teams/{WEBSITE}/links"),
+  ] {
+    assert_eq!(
+      get(state(""), &uri).await,
+      (StatusCode::UNAUTHORIZED, unauthorized()),
+      "{uri}"
+    );
+  }
+  let (status, _, body) = request(
+    state(""),
+    Request::delete(format!("/api/links/{WEBSITE}"))
+      .body(Body::empty())
+      .unwrap(),
+  )
+  .await;
+  assert_eq!((status, body), (StatusCode::UNAUTHORIZED, unauthorized()));
+}

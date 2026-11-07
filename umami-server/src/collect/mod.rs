@@ -17,12 +17,20 @@ use axum::body::Bytes;
 use axum::extract::{
   ConnectInfo,
   FromRequestParts,
+  OriginalUri,
+  Path,
   State,
 };
 use axum::http::request::Parts;
 use axum::http::{
   HeaderMap,
+  Uri,
   header,
+};
+use axum::response::{
+  IntoResponse,
+  Redirect,
+  Response,
 };
 use chrono::{
   DateTime,
@@ -34,6 +42,8 @@ use serde_json::{
   Value,
   json,
 };
+use url::Url;
+use uuid::Uuid;
 
 pub use self::geo::GeoDatabase;
 use self::payload::{
@@ -52,6 +62,7 @@ use crate::error::{
   AppError,
   AppResult,
 };
+use crate::queries::link as links;
 use crate::state::AppState;
 use crate::{
   crypto,
@@ -79,7 +90,7 @@ mod len {
 }
 
 /// Upstream's `EVENT_TYPE`.
-mod event_type {
+pub(crate) mod event_type {
   pub const PAGE_VIEW: i32 = 1;
   pub const CUSTOM_EVENT: i32 = 2;
   pub const LINK_EVENT: i32 = 3;
@@ -158,6 +169,86 @@ pub async fn batch(
       "details": details,
       "cache": cache,
   })))
+}
+
+/// Upstream's 1×1 transparent GIF, served by `/p/{slug}`.
+const PIXEL_GIF: &[u8] = &[
+  0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00,
+  0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02,
+  0x02, 0x44, 0x01, 0x00, 0x3b,
+];
+
+/// `GET /q/{slug}`: records a visit to the link, then redirects to its URL
+/// (upstream's `src/app/(collect)/q/[slug]/route.ts`).
+pub async fn link(
+  State(state): State<AppState>,
+  PeerAddr(peer): PeerAddr,
+  OriginalUri(uri): OriginalUri,
+  headers: HeaderMap,
+  Path(slug): Path<String>,
+) -> AppResult<Response> {
+  let found = links::by_slug(&state.db, links::Kind::Link, &slug)
+    .await?
+    .ok_or(AppError::NotFound)?;
+  // Upstream records the visit, then fails with a 500 on a URL it cannot
+  // redirect to.
+  let target = Url::parse(found.url.as_deref().unwrap_or_default())
+    .map_err(|_| AppError::BadRequest("The link's URL is invalid.".to_owned()))?;
+
+  visit(&state, &headers, peer, &uri, "link", found.id).await;
+
+  Ok(Redirect::temporary(target.as_str()).into_response())
+}
+
+/// `GET /p/{slug}`: records a view of the pixel and serves it (upstream's
+/// `src/app/(collect)/p/[slug]/route.ts`).
+pub async fn pixel(
+  State(state): State<AppState>,
+  PeerAddr(peer): PeerAddr,
+  OriginalUri(uri): OriginalUri,
+  headers: HeaderMap,
+  Path(slug): Path<String>,
+) -> AppResult<Response> {
+  let found = links::by_slug(&state.db, links::Kind::Pixel, &slug)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+  visit(&state, &headers, peer, &uri, "pixel", found.id).await;
+
+  let headers = [
+    (header::CONTENT_TYPE, "image/gif"),
+    (header::CACHE_CONTROL, "no-cache, no-store, must-revalidate"),
+    (header::PRAGMA, "no-cache"),
+    (header::EXPIRES, "0"),
+  ];
+  Ok((headers, PIXEL_GIF).into_response())
+}
+
+/// Records a link or pixel visit as upstream does: as an `/api/send` event for
+/// the requested URL, from the visitor. The visitor is served whatever the
+/// outcome, so failures are only logged.
+///
+/// Upstream reports the URL with its server's listening address as the host
+/// (so events record `0.0.0.0` as their hostname); this uses the `Host` header.
+async fn visit(state: &AppState, headers: &HeaderMap, peer: Option<SocketAddr>, uri: &Uri, source: &str, id: Uuid) {
+  let host = client::header_string(headers, header::HOST).unwrap_or_else(|| "localhost".to_owned());
+  let path = uri.path_and_query().map_or("/", |path| path.as_str());
+
+  let mut payload = Map::new();
+  payload.insert(source.to_owned(), json!(id));
+  payload.insert("url".to_owned(), json!(format!("http://{host}{path}")));
+  if let Some(referrer) = client::header_string(headers, header::REFERER).filter(|r| !r.is_empty()) {
+    payload.insert("referrer".to_owned(), json!(referrer));
+  }
+  let body = json!({ "type": "event", "payload": payload });
+
+  if let Err(error) = collect(state, headers, peer, &body).await {
+    if error.status().is_server_error() {
+      tracing::error!(%error, source, %id, "failed to record a visit");
+    } else {
+      tracing::debug!(%error, source, %id, "visit not recorded");
+    }
+  }
 }
 
 /// Processes one `/api/send` body and returns the response JSON.

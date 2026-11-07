@@ -428,8 +428,16 @@ pub(super) async fn delete_teams(tx: &mut PgConnection, ids: &[Uuid]) -> sqlx::R
 }
 
 /// Deletes the links, pixels and boards matching `condition` (on `$1`), with
-/// their share links.
+/// their share links and the links' and pixels' collected events.
 pub(super) async fn delete_owned_entities(tx: &mut PgConnection, condition: &str, ids: &[Uuid]) -> sqlx::Result<()> {
+  let tracked: Vec<Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+    "select link_id from link where {condition} union all select pixel_id from pixel where {condition}"
+  )))
+  .bind(ids)
+  .fetch_all(&mut *tx)
+  .await?;
+  website::delete_collected_data(tx, &tracked).await?;
+
   sqlx::query(sqlx::AssertSqlSafe(format!(
     "delete from share where entity_id in ( \
            select link_id from link where {condition} \

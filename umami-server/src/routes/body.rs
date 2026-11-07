@@ -53,6 +53,12 @@ pub fn nullable_string<'a>(object: &'a Map<String, Value>, key: &str) -> Result<
   }
 }
 
+/// A nullable, optional UUID field (`z.uuid().nullable().optional()`); `null`
+/// and absent are both `None`.
+pub fn nullable_uuid(object: &Map<String, Value>, key: &str) -> Result<Option<Uuid>, AppError> {
+  nullable_string(object, key)?.flatten().map(uuid).transpose()
+}
+
 /// An optional object field: `anyObjectParam` (`z.record(z.string(), z.any())`),
 /// or `z.object(...)` before its fields are checked.
 pub fn optional_object<'a>(

@@ -7,6 +7,7 @@
 
 pub mod api_key;
 pub mod board;
+pub mod link;
 pub mod segment;
 pub mod share;
 pub mod team;
@@ -151,6 +152,8 @@ fn sort_column(field: &str) -> Option<&'static str> {
   Some(match field {
     "name" => "name",
     "domain" => "domain",
+    "slug" => "slug",
+    "url" => "url",
     "username" => "username",
     "role" => "role",
     "createdAt" => "created_at",

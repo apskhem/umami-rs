@@ -141,6 +141,38 @@ Differences from upstream:
 - **White labels** are not attached to opened share links: upstream keeps them only
   in Redis, which umami-rs does not use (as upstream without Redis).
 
+## Links and pixels
+
+Short links and tracking pixels (`/api/links` and `/api/pixels`, each with `/{id}`,
+`/{id}/shares` and `/charts`, and `/api/teams/{id}/links` and `/pixels`) are created,
+listed, updated, shared and deleted as upstream's, with the permissions of websites.
+Visiting a link (`GET /q/{slug}`) records a link event and redirects to the link's
+URL (307); loading a pixel (`GET /p/{slug}`) records a pixel event and returns
+upstream's 1×1 GIF. Visits go through the same collection as `/api/send` (sessions,
+geolocation, bot filtering, `IGNORE_IP`), and the visitor is redirected or served
+the image whether or not the visit is recorded.
+
+Differences from upstream:
+
+- **Visits record the request's `Host` as the hostname**; upstream records its own
+  listening address (`0.0.0.0` in its Docker image).
+- **Deleting** a link or pixel also deletes its share links and collected events,
+  as does deleting the user or team that owns it; upstream keeps both.
+- **Taken IDs and slugs** return 400 on create where upstream fails with a 500, as
+  do malformed team IDs; a team that does not exist is a 404 (upstream stores it).
+- **Missing records** (an admin updating, deleting or sharing one that does not
+  exist, or a malformed ID) return 404 where upstream fails with a 500 or, for
+  shares, stores a share of nothing.
+- **Lists** are ordered by name unless sorted, ties broken by ID; upstream leaves
+  them unordered. Soft-deleted links and pixels are left out of every list
+  (upstream shows them in team lists and a user's pixels).
+- **Charts** count the local half-days (00:00 and 12:00) that the range covers.
+  Upstream labels its buckets from the range's start, so a `startAt` between
+  half-days, or a daylight saving change in the range, leaves the later buckets
+  at zero.
+- **A link whose URL cannot be parsed** returns 400 without recording the visit;
+  upstream records it, then fails with a 500.
+
 ## Analytics
 
 The website dashboard's queries under `/api/websites/{id}`: `stats`, `pageviews`,

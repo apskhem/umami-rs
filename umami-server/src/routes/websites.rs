@@ -90,14 +90,6 @@ fn share_id(object: &Map<String, Value>) -> AppResult<Option<Option<&str>>> {
   Ok(share_id)
 }
 
-/// A nullable, optional UUID field.
-fn nullable_uuid(object: &Map<String, Value>, key: &str) -> AppResult<Option<uuid::Uuid>> {
-  body::nullable_string(object, key)?
-    .flatten()
-    .map(body::uuid)
-    .transpose()
-}
-
 fn with_share(website: &Website, share_id: Option<String>) -> Value {
   let mut object = website.to_json();
   object.insert("shareId".to_owned(), json!(share_id));
@@ -127,8 +119,8 @@ pub async fn create(State(state): State<AppState>, auth: AppResult<Auth>, body: 
   let name = name(body::string(object, "name")?)?;
   let domain = domain(body::string(object, "domain")?)?;
   let share_id = share_id(object)?.flatten();
-  let team_id = nullable_uuid(object, "teamId")?;
-  let id = nullable_uuid(object, "id")?;
+  let team_id = body::nullable_uuid(object, "teamId")?;
+  let id = body::nullable_uuid(object, "id")?;
 
   let auth = auth?;
   let team_allowed = match team_id {

@@ -378,8 +378,9 @@ pub async fn transfer(
   .await
 }
 
-/// Upstream's `deleteWebsiteDependentData`: the collected data of `ids`.
-async fn delete_collected_data(tx: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<()> {
+/// Upstream's `deleteWebsiteDependentData`: the collected data of `ids`
+/// (websites, or the links and pixels whose events are stored the same way).
+pub(super) async fn delete_collected_data(tx: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<()> {
   for table in [
     "session_replay_saved",
     "session_replay",

@@ -15,6 +15,7 @@ use serde_json::{
   Value,
   json,
 };
+use uuid::Uuid;
 
 use super::params::{
   PAGING,
@@ -53,6 +54,7 @@ use crate::queries::share::{
   SLUG_TAKEN,
 };
 use crate::queries::{
+  Filters,
   team,
   user,
   website,
@@ -77,6 +79,50 @@ fn parameters(object: &Map<String, Value>) -> AppResult<Value> {
   Ok(Value::Object(body::object_field(object, "parameters")?.clone()))
 }
 
+/// The query of the routes listing an entity's share links (upstream's
+/// `filterParams` and `pagingParams`).
+pub(super) fn list_filters(query: Option<&str>) -> AppResult<Filters> {
+  let params = Params::parse(query);
+  check_filter_params(&params)?;
+  params.filters(PAGING)
+}
+
+/// The body of the routes creating a share link for an entity: its name and
+/// optional `parameters` (by default none).
+pub(super) fn new_share(object: &Map<String, Value>) -> AppResult<(&str, Map<String, Value>)> {
+  let name = name(object)?;
+  let parameters = body::optional_object(object, "parameters")?
+    .cloned()
+    .unwrap_or_default();
+
+  Ok((name, parameters))
+}
+
+/// Creates a share link of an entity, with a random slug.
+pub(super) async fn create_random(
+  state: &AppState,
+  entity_id: Uuid,
+  kind: EntityType,
+  name: &str,
+  parameters: Map<String, Value>,
+) -> AppResult<Json<Value>> {
+  let created = share::create(
+    &state.db,
+    &NewShare {
+      id: state.new_id(),
+      entity_id,
+      kind,
+      name,
+      slug: &crypto::random_chars(SLUG_LENGTH),
+      parameters: Value::Object(parameters),
+    },
+  )
+  .await
+  .map_err(|e| AppError::taken(e, SLUG_TAKEN))?;
+
+  Ok(Json(created.to_json()))
+}
+
 /// `GET /api/websites/{websiteId}/shares`: the website's share links, newest first.
 pub async fn website_list(
   State(state): State<AppState>,
@@ -84,9 +130,7 @@ pub async fn website_list(
   RawQuery(query): RawQuery,
   auth: AppResult<Auth>,
 ) -> AppResult<Json<Value>> {
-  let params = Params::parse(query.as_deref());
-  check_filter_params(&params)?;
-  let filters = params.filters(PAGING)?;
+  let filters = list_filters(query.as_deref())?;
 
   let auth = auth?;
   can::require(can::can_view_authenticated_website(&state.db, &auth, &website_id).await?)?;
@@ -103,11 +147,7 @@ pub async fn website_create(
   body: Bytes,
 ) -> AppResult<Json<Value>> {
   let body = body::parse(&body);
-  let object = body::object(&body)?;
-  let name = name(object)?;
-  let parameters = body::optional_object(object, "parameters")?
-    .cloned()
-    .unwrap_or_default();
+  let (name, parameters) = new_share(body::object(&body)?)?;
 
   let auth = auth?;
   can::require(can::can_change_website(&state.db, &auth, &website_id, WEBSITE_UPDATE).await?)?;
@@ -116,21 +156,7 @@ pub async fn website_create(
     return Err(AppError::NotFound);
   };
 
-  let created = share::create(
-    &state.db,
-    &NewShare {
-      id: state.new_id(),
-      entity_id: found.website_id,
-      kind: EntityType::Website,
-      name,
-      slug: &crypto::random_chars(SLUG_LENGTH),
-      parameters: Value::Object(parameters),
-    },
-  )
-  .await
-  .map_err(|e| AppError::taken(e, SLUG_TAKEN))?;
-
-  Ok(Json(created.to_json()))
+  create_random(&state, found.website_id, EntityType::Website, name, parameters).await
 }
 
 /// `POST /api/share`: a new share link for a website, link, pixel or board.

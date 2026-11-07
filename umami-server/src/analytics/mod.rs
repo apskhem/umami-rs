@@ -4,6 +4,7 @@
 //! language (`src/lib/prisma.ts`, `src/lib/params.ts`). Lists break ties in a
 //! fixed order, which upstream leaves to the database.
 
+pub mod charts;
 pub mod date;
 pub mod events;
 pub mod filters;
