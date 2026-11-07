@@ -271,6 +271,21 @@ Differences from upstream:
   cannot save a report for a website that does not exist (404; upstream stores
   it).
 
+## Annotations
+
+Dated notes on a website's charts (`/api/websites/{id}/annotations` and
+`/{annotationId}`) are listed (latest first, optionally between `startAt` and
+`endAt`, searchable and paged), created, read, updated and deleted as upstream's.
+As upstream, an update without `allDay` makes the annotation all-day, deleting
+needs only permission to update the website, and share links can read
+annotations unless they disable filters.
+
+Differences from upstream:
+
+- Annotations on the same date are listed in a fixed order (by ID).
+- A malformed annotation ID is a 404 where upstream fails with a 500, and admins
+  cannot annotate a website that does not exist (404; upstream stores it).
+
 ## Tracker script
 
 `/script.js` serves upstream's tracker exactly as the v3.4.1 release image ships it,

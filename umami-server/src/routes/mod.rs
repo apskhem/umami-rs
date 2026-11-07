@@ -44,6 +44,7 @@ use crate::tracker::TrackerScript;
 
 mod admin;
 mod analytics;
+mod annotations;
 mod auth;
 mod boards;
 mod body;
@@ -284,6 +285,16 @@ pub fn router(config: &Config) -> Router<AppState> {
       get(reports::revenue_sessions),
     )
     .route("/api/websites/{websiteId}/revenue/stats", get(reports::revenue_stats))
+    .route(
+      "/api/websites/{websiteId}/annotations",
+      get(annotations::list).post(annotations::create),
+    )
+    .route(
+      "/api/websites/{websiteId}/annotations/{annotationId}",
+      get(annotations::get)
+        .post(annotations::update)
+        .delete(annotations::delete),
+    )
     .route("/api/realtime/{websiteId}", get(analytics::realtime))
     .route("/api/websites/{websiteId}/reset", post(websites::reset))
     .route(

@@ -699,3 +699,38 @@ async fn report_routes_validate_before_auth() {
     );
   }
 }
+
+#[tokio::test]
+async fn annotation_routes_validate_before_auth() {
+  let list = format!("/api/websites/{WEBSITE}/annotations");
+  let item = format!("{list}/{WEBSITE}");
+  for (uri, body) in [
+    (&list, json!({ "note": "n" })),
+    (&list, json!({ "date": "2026-01-01", "note": "" })),
+    (&list, json!({ "date": "2026-01-01", "note": "n", "allDay": "yes" })),
+    (&item, json!({ "date": {}, "note": "n" })),
+  ] {
+    assert_eq!(
+      post(state(""), uri, &[], body.clone()).await,
+      (StatusCode::BAD_REQUEST, bad_request()),
+      "{uri} {body}"
+    );
+  }
+  assert_eq!(
+    get(state(""), &format!("{list}?endAt=x")).await,
+    (StatusCode::BAD_REQUEST, bad_request())
+  );
+
+  // Valid requests without credentials never reach the database.
+  assert_eq!(
+    post(state(""), &list, &[], json!({ "date": 0, "note": "n" })).await,
+    (StatusCode::UNAUTHORIZED, unauthorized())
+  );
+  for uri in [format!("{list}?startAt=1&endAt=2&search=x"), item] {
+    assert_eq!(
+      get(state(""), &uri).await,
+      (StatusCode::UNAUTHORIZED, unauthorized()),
+      "{uri}"
+    );
+  }
+}
