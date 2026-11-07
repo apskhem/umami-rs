@@ -3,7 +3,9 @@ resolver = "3"
 members = ["crate-ua-rules", "parity", "umami-db", "umami-server"]
 
 [workspace.package]
-version = "0.1.0"
+# Major and minor follow the upstream release below; the patch number counts
+# umami-rs's own releases against it.
+version = "3.4.0"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"

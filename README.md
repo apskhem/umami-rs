@@ -6,6 +6,10 @@ databases, the official tracker script and the official dashboard work against i
 It also serves the official dashboard, built from upstream's source as static
 files, so no Node.js server is needed (see [Dashboard](#dashboard)).
 
+Releases take upstream's major and minor version: umami-rs 3.4.x is compatible with
+upstream 3.4.1, and its patch number counts umami-rs's own fixes. Changes are listed
+in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Layout
 
 | Crate | Purpose |
@@ -49,7 +53,7 @@ To build without cloning the repo, give Docker its URL as the build context
 `.env` file of your own (see [`.env.example`](.env.example)):
 
 ```sh
-docker build -t umami-rs https://github.com/apskhem/umami-rs.git#main
+docker build -t umami-rs https://github.com/apskhem/umami-rs.git#v3.4.0
 docker run -p 3000:3000 --env-file .env umami-rs
 ```
 

@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
     .with_context(|| format!("unable to bind {}:{}", config.host, config.port))?;
 
   tracing::info!(
+      version = env!("CARGO_PKG_VERSION"),
       address = %listener.local_addr()?,
       base_path = %config.base_path,
       "listening",

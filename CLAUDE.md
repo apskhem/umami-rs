@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Rust (axum + sqlx, Postgres) drop-in replacement for the **Umami v3.4.1** backend, which also serves upstream's dashboard as a static build. The official tracker script, dashboard and existing Umami databases must work against it unchanged. The pinned upstream version lives in `Cargo.toml` under `[workspace.metadata.umami]`, in `umami_db::UMAMI_VERSION` and in the `Dockerfile`'s `UMAMI_VERSION` (tests keep them equal).
+A Rust (axum + sqlx, Postgres) drop-in replacement for the **Umami v3.4.1** backend, which also serves upstream's dashboard as a static build. The official tracker script, dashboard and existing Umami databases must work against it unchanged. The pinned upstream version lives in `Cargo.toml` under `[workspace.metadata.umami]`, in `umami_db::UMAMI_VERSION` and in the `Dockerfile`'s `UMAMI_VERSION` (tests keep them equal). umami-rs's own version (`[workspace.package] version`) takes upstream's major and minor; its patch number counts umami-rs releases (bump it and add a `CHANGELOG.md` entry per release).
 
 **Compatibility boundary:** match upstream's API (routes, request/response JSON shapes and types, status codes, error envelope) and DB schema exactly. Internal logic does *not* need to be bug-for-bug: where upstream 500s, writes partially, orphans rows or returns unstable lists, do the correct thing instead, reuse upstream's error messages where possible, cover the case in the parity tests, and document the difference in `README.md` (each feature section has a "Differences from upstream" list).
 

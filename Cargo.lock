@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "crate-ua-rules"
-version = "0.1.0"
+version = "3.4.0"
 dependencies = [
  "fancy-regex",
  "regex",
@@ -2676,7 +2676,7 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "umami-db"
-version = "0.1.0"
+version = "3.4.0"
 dependencies = [
  "hex",
  "sha2 0.11.1",
@@ -2690,7 +2690,7 @@ dependencies = [
 
 [[package]]
 name = "umami-parity"
-version = "0.1.0"
+version = "3.4.0"
 dependencies = [
  "aes-gcm",
  "axum",
@@ -2713,7 +2713,7 @@ dependencies = [
 
 [[package]]
 name = "umami-server"
-version = "0.1.0"
+version = "3.4.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
