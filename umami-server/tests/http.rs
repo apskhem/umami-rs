@@ -453,7 +453,7 @@ async fn link_and_pixel_routes_validate_before_auth() {
     "/api/links/charts".to_owned(),
     "/api/links/charts?ids=x".to_owned(),
     format!("/api/pixels/charts?ids={WEBSITE}&startAt=1.5"),
-    format!("/api/links?pageSize=0"),
+    "/api/links?pageSize=0".to_owned(),
     format!("/api/teams/{WEBSITE}/pixels?sortDescending=yes"),
     format!("/api/links/{WEBSITE}/shares?segment=x"),
   ] {
@@ -505,4 +505,89 @@ async fn link_and_pixel_routes_validate_before_auth() {
   )
   .await;
   assert_eq!((status, body), (StatusCode::UNAUTHORIZED, unauthorized()));
+}
+
+#[tokio::test]
+async fn board_routes_validate_before_auth() {
+  let board = format!("/api/boards/{WEBSITE}");
+  let clone = format!("{board}/clone");
+  for (uri, body) in [
+    ("/api/boards", json!({ "name": "n" })),
+    ("/api/boards", json!({ "type": "dashboard", "name": "n" })),
+    ("/api/boards", json!({ "type": "mixed", "name": "n".repeat(101) })),
+    (
+      "/api/boards",
+      json!({ "type": "mixed", "name": "n", "description": "d".repeat(501) }),
+    ),
+    ("/api/boards", json!({ "type": "mixed", "name": "n", "teamId": "x" })),
+    (
+      "/api/boards",
+      json!({ "type": "mixed", "name": "n", "parameters": null }),
+    ),
+    (
+      "/api/boards",
+      json!({ "type": "website", "name": "n", "parameters": { "websiteId": "x" } }),
+    ),
+    (
+      "/api/boards",
+      json!({ "type": "pixel", "name": "n", "parameters": { "pixelId": null } }),
+    ),
+    (&board, json!({ "type": "Mixed" })),
+    (&board, json!({ "name": "n".repeat(201) })),
+    (&board, json!({ "parameters": [] })),
+    (&clone, json!({ "description": 1 })),
+    ("/api/dashboard", json!({ "parameters": "x" })),
+    (&format!("{board}/shares"), json!({})),
+  ] {
+    assert_eq!(
+      post(state(""), uri, &[], body.clone()).await,
+      (StatusCode::BAD_REQUEST, bad_request()),
+      "{uri} {body}"
+    );
+  }
+  for uri in [
+    "/api/websites/charts".to_owned(),
+    format!("/api/websites/charts?ids={WEBSITE}&endAt=x"),
+    "/api/boards?page=0".to_owned(),
+    format!("/api/teams/{WEBSITE}/boards?sortDescending=1"),
+    format!("{board}/shares?cohort=x"),
+  ] {
+    assert_eq!(
+      get(state(""), &uri).await,
+      (StatusCode::BAD_REQUEST, bad_request()),
+      "{uri}"
+    );
+  }
+
+  // Valid requests without credentials never reach the database.
+  for (uri, body) in [
+    (
+      "/api/boards",
+      json!({ "type": "open", "name": "", "userId": null, "parameters": { "websiteId": WEBSITE, "rows": 1 } }),
+    ),
+    (board.as_str(), json!({ "type": "dashboard", "parameters": {} })),
+    (clone.as_str(), json!({})),
+    ("/api/dashboard", json!({})),
+    (&format!("{board}/shares"), json!({ "name": "n" })),
+  ] {
+    assert_eq!(
+      post(state(""), uri, &[], body).await,
+      (StatusCode::UNAUTHORIZED, unauthorized()),
+      "{uri}"
+    );
+  }
+  for uri in [
+    format!("/api/websites/charts?ids={WEBSITE}"),
+    "/api/boards".to_owned(),
+    board.clone(),
+    format!("{board}/shares"),
+    format!("/api/teams/{WEBSITE}/boards"),
+    "/api/dashboard".to_owned(),
+  ] {
+    assert_eq!(
+      get(state(""), &uri).await,
+      (StatusCode::UNAUTHORIZED, unauthorized()),
+      "{uri}"
+    );
+  }
 }

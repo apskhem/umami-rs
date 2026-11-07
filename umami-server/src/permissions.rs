@@ -5,6 +5,7 @@
 //! them. Where upstream would pass a malformed ID to the database and fail with a
 //! 500, these return [`AppError::NotFound`] instead.
 
+use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -14,6 +15,7 @@ use crate::error::{
   AppResult,
 };
 use crate::queries::{
+  board,
   team,
   website,
 };
@@ -362,7 +364,111 @@ pub async fn can_change_link_or_pixel(
   }
 }
 
+/// Upstream's `canViewBoard`: admins, share links of the board, its owner or
+/// its team's members.
+pub async fn can_view_board(db: &PgPool, auth: &Auth, board_id: &str) -> AppResult<bool> {
+  if is_admin(auth) {
+    return Ok(true);
+  }
+  if auth
+    .share_token
+    .as_ref()
+    .is_some_and(|token| token["boardId"].as_str() == Some(board_id))
+  {
+    return Ok(true);
+  }
+
+  let Some(user) = &auth.user else {
+    return Ok(false);
+  };
+  match owner(db, EntityType::Board, db_id(board_id)?).await? {
+    Some(owner) => owner.permits(db, user.id, None).await,
+    None => Ok(false),
+  }
+}
+
+/// Upstream's `canUpdateBoard` (`website:update`) and `canDeleteBoard`
+/// (`website:delete`).
+pub async fn can_change_board(db: &PgPool, auth: &Auth, board_id: &str, permission: &str) -> AppResult<bool> {
+  let Some(user) = &auth.user else {
+    return Ok(false);
+  };
+  if user.is_admin {
+    return Ok(true);
+  }
+
+  match owner(db, EntityType::Board, db_id(board_id)?).await? {
+    Some(owner) => owner.permits(db, user.id, Some(permission)).await,
+    None => Ok(false),
+  }
+}
+
+/// Upstream's `canViewBoardEntities`: whether the signed-in user (share links
+/// aside) can view every website, pixel and link a board with this type and
+/// these parameters shows. A failed check counts as no access.
+pub async fn can_view_board_entities(db: &PgPool, auth: &Auth, kind: &str, parameters: &Value) -> AppResult<bool> {
+  let user_only = Auth {
+    share_token: None,
+    ..auth.clone()
+  };
+  let ids = board::entity_ids(kind, parameters);
+
+  for id in &ids.websites {
+    if !can_view_website(db, &user_only, id).await.unwrap_or(false) {
+      return Ok(false);
+    }
+  }
+  for (kind, ids) in [(EntityType::Pixel, &ids.pixels), (EntityType::Link, &ids.links)] {
+    for id in ids {
+      if !can_view_link_or_pixel(db, &user_only, kind, id).await.unwrap_or(false) {
+        return Ok(false);
+      }
+    }
+  }
+
+  Ok(true)
+}
+
 // Websites
+
+/// Upstream's `canViewBatchWebsites`: which of `ids` (once each, in order) the
+/// caller can chart: all for admins, those a share link covers, and websites
+/// the user owns or whose team they are in.
+pub async fn viewable_websites(db: &PgPool, auth: &Auth, ids: &[(&str, Uuid)]) -> AppResult<Vec<Uuid>> {
+  let mut requested: Vec<(&str, Uuid)> = Vec::new();
+  for &(id, uuid) in ids {
+    if !requested.iter().any(|(seen, _)| *seen == id) {
+      requested.push((id, uuid));
+    }
+  }
+  if is_admin(auth) {
+    return Ok(requested.into_iter().map(|(_, uuid)| uuid).collect());
+  }
+
+  let owned: Vec<Uuid> = match &auth.user {
+    Some(user) => {
+      let uuids: Vec<Uuid> = requested.iter().map(|(_, uuid)| *uuid).collect();
+      sqlx::query_scalar(
+        "select w.website_id from website w where w.website_id = any($1) and (w.user_id = $2 \
+         or exists (select 1 from team_user tu join team t on t.team_id = tu.team_id \
+         where tu.team_id = w.team_id and tu.user_id = $2 and t.deleted_at is null))",
+      )
+      .bind(&uuids)
+      .bind(user.id)
+      .fetch_all(db)
+      .await?
+    }
+    None => Vec::new(),
+  };
+
+  Ok(
+    requested
+      .into_iter()
+      .filter(|(id, uuid)| share_token_includes(auth, id) || owned.contains(uuid))
+      .map(|(_, uuid)| uuid)
+      .collect(),
+  )
+}
 
 /// Whether the share token covers the website (or link or pixel).
 pub fn share_token_includes(auth: &Auth, website_id: &str) -> bool {

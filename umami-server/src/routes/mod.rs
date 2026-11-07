@@ -41,7 +41,9 @@ use crate::tracker::TrackerScript;
 mod admin;
 mod analytics;
 mod auth;
+mod boards;
 mod body;
+mod charts;
 mod config;
 mod heartbeat;
 mod links;
@@ -169,6 +171,19 @@ pub fn router(config: &Config) -> Router<AppState> {
         .delete(two_factor::reset_user),
     )
     .route("/api/admin/teams/{teamId}/2fa", post(two_factor::set_team))
+    .route("/api/websites/charts", get(websites::charts))
+    .route("/api/boards", get(boards::list).post(boards::create))
+    .route(
+      "/api/boards/{boardId}",
+      get(boards::get).post(boards::update).delete(boards::delete),
+    )
+    .route("/api/boards/{boardId}/clone", post(boards::clone))
+    .route(
+      "/api/boards/{boardId}/shares",
+      get(boards::share_list).post(boards::share_create),
+    )
+    .route("/api/teams/{teamId}/boards", get(boards::team_list))
+    .route("/api/dashboard", get(boards::dashboard).post(boards::save_dashboard))
     .route("/api/links", get(links::list::<Links>).post(links::create::<Links>))
     .route("/api/links/charts", get(links::charts::<Links>))
     .route(

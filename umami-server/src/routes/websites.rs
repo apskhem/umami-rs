@@ -17,6 +17,7 @@ use serde_json::{
   json,
 };
 
+use super::charts::ChartQuery;
 use super::params::{
   PAGING_SEARCH_SORTING,
   Params,
@@ -110,6 +111,22 @@ pub async fn list(
   let scope = website::Scope::for_user(user_id, params.flag("includeTeams"));
 
   Ok(Json(website::list(&state.db, scope, filters).await?))
+}
+
+/// `GET /api/websites/charts`: the sparklines of the websites list, for the
+/// given websites the caller can view (others are left out).
+pub async fn charts(
+  State(state): State<AppState>,
+  RawQuery(query): RawQuery,
+  auth: AppResult<Auth>,
+) -> AppResult<Json<Value>> {
+  let chart = ChartQuery::parse(&state, query.as_deref()).await?;
+
+  let auth = auth?;
+  let ids: Vec<(&str, uuid::Uuid)> = chart.ids.iter().map(|(id, uuid)| (id.as_str(), *uuid)).collect();
+  let visible = can::viewable_websites(&state.db, &auth, &ids).await?;
+
+  Ok(Json(chart.respond(&state, &visible, None).await?))
 }
 
 /// `POST /api/websites`: creates a website for the caller or for a team.

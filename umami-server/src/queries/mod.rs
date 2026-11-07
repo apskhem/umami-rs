@@ -152,6 +152,8 @@ fn sort_column(field: &str) -> Option<&'static str> {
   Some(match field {
     "name" => "name",
     "domain" => "domain",
+    "description" => "description",
+    "type" => "type",
     "slug" => "slug",
     "url" => "url",
     "username" => "username",

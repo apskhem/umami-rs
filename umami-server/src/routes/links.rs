@@ -11,16 +11,9 @@ use axum::extract::{
   RawQuery,
   State,
 };
-use chrono::{
-  DateTime,
-  Utc,
-};
-use serde_json::{
-  Value,
-  json,
-};
-use uuid::Uuid;
+use serde_json::Value;
 
+use super::charts::ChartQuery;
 use super::params::{
   PAGING_SEARCH_SORTING,
   Params,
@@ -29,10 +22,6 @@ use super::{
   body,
   ok,
   shares,
-};
-use crate::analytics::{
-  charts,
-  date,
 };
 use crate::auth::Auth;
 use crate::collect::event_type;
@@ -58,10 +47,6 @@ use crate::queries::{
   team,
 };
 use crate::state::AppState;
-use crate::{
-  js,
-  zod,
-};
 
 /// Which routes a handler serves: [`Links`] or [`Pixels`].
 pub trait Model {
@@ -293,36 +278,6 @@ pub async fn share_create<M: Model>(
   shares::create_random(&state, found.id, kind.entity_type(), name, parameters).await
 }
 
-/// The `ids` parameter: 1 to 20 comma-separated UUIDs.
-fn chart_ids(value: Option<&str>) -> AppResult<Vec<(&str, Uuid)>> {
-  let ids = value
-    .ok_or_else(AppError::bad_request)?
-    .split(',')
-    .map(body::trim)
-    .filter(|id| !id.is_empty())
-    .map(|id| zod::uuid(id).map(|uuid| (id, uuid)).ok_or_else(AppError::bad_request))
-    .collect::<AppResult<Vec<_>>>()?;
-
-  if ids.is_empty() || ids.len() > 20 {
-    return Err(AppError::bad_request());
-  }
-  Ok(ids)
-}
-
-/// An optional `z.coerce.number().int()` timestamp.
-fn timestamp(params: &Params, key: &str) -> AppResult<Option<DateTime<Utc>>> {
-  params
-    .get(key)
-    .map(|value| {
-      let number = js::string_to_number(value);
-      if number.fract() != 0.0 {
-        return Err(AppError::bad_request());
-      }
-      date::from_js_millis(number).ok_or_else(AppError::bad_request)
-    })
-    .transpose()
-}
-
 /// `GET /api/links/charts`: the sparklines of the links list, for the given
 /// links the caller can view (others are left out).
 pub async fn charts<M: Model>(
@@ -331,57 +286,27 @@ pub async fn charts<M: Model>(
   auth: AppResult<Auth>,
 ) -> AppResult<Json<Value>> {
   let kind = M::KIND;
-  let params = Params::parse(query.as_deref());
-  let ids = chart_ids(params.get("ids"))?;
-  let (start_at, end_at) = (timestamp(&params, "startAt")?, timestamp(&params, "endAt")?);
-  let timezone = match params.get("timezone") {
-    Some(value) => {
-      date::time_zone(&state.db, value)
-        .await?
-        .ok_or_else(AppError::bad_request)?
-    }
-    None => "UTC".to_owned(),
-  };
+  let chart = ChartQuery::parse(&state, query.as_deref()).await?;
 
   let auth = auth?;
   let mut visible = Vec::new();
-  for (id, uuid) in ids {
+  for (id, uuid) in &chart.ids {
     if can::can_view_link_or_pixel(&state.db, &auth, kind.entity_type(), id).await? {
-      visible.push(uuid);
+      visible.push(*uuid);
     }
   }
 
-  let range = match (start_at, end_at) {
-    (Some(start), Some(end)) => (start, end),
-    _ => charts::default_range(&state.db, &timezone).await?,
-  };
   let event_type = match kind {
     Kind::Link => event_type::LINK_EVENT,
     Kind::Pixel => event_type::PIXEL_EVENT,
   };
-  let data = charts::list_charts(&state.db, &visible, range, &timezone, Some(event_type)).await?;
 
-  Ok(Json(json!({ "data": data })))
+  Ok(Json(chart.respond(&state, &visible, Some(event_type)).await?))
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
-
-  const ID: &str = "0d8e3a5c-1f2b-4c3d-9e4f-5a6b7c8d9e0f";
-
-  #[test]
-  fn parses_chart_ids_like_upstream() {
-    let value = format!(" {ID} ,,{ID}");
-    let ids = chart_ids(Some(&value)).unwrap();
-    assert_eq!(ids.len(), 2);
-    assert_eq!(ids[0].0, ID);
-
-    let many = vec![ID; 21].join(",");
-    for invalid in [None, Some(""), Some(" , "), Some("x"), Some(many.as_str())] {
-      assert!(chart_ids(invalid).is_err(), "{invalid:?}");
-    }
-  }
 
   #[test]
   fn validates_slugs() {
@@ -390,17 +315,5 @@ mod tests {
     assert!(slug(&"s".repeat(101)).is_err());
     // zod counts UTF-16 code units.
     assert!(slug("😀😀😀😀").is_ok());
-  }
-
-  #[test]
-  fn timestamps_are_integers() {
-    let params = Params::parse(Some("a=1700000000000&b=1.5&c=x&d="));
-
-    assert!(timestamp(&params, "a").unwrap().is_some());
-    assert!(timestamp(&params, "b").is_err());
-    assert!(timestamp(&params, "c").is_err());
-    // `Number("")` is 0.
-    assert_eq!(timestamp(&params, "d").unwrap(), DateTime::from_timestamp_millis(0));
-    assert_eq!(timestamp(&params, "missing").unwrap(), None);
   }
 }

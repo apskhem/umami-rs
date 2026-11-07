@@ -173,6 +173,32 @@ Differences from upstream:
 - **A link whose URL cannot be parsed** returns 400 without recording the visit;
   upstream records it, then fails with a 500.
 
+## Boards
+
+Boards (`/api/boards`, `/api/boards/{id}` with `clone` and `shares`,
+`/api/teams/{id}/boards`) and each user's own dashboard (`/api/dashboard`, a board
+whose ID is the user's) are created, listed, updated, cloned, shared and deleted as
+upstream's. As upstream, a board may only show websites, pixels and links its
+creator can view, and funnel and goal components must name a saved report of that
+type on their website; cloning drops report references that no longer hold.
+`/api/websites/charts` serves the website list's sparklines, like the link and
+pixel ones.
+
+Differences from upstream:
+
+- **Deleting** a board also deletes its share links; upstream keeps them.
+- **Layouts upstream cannot read** (`rows`, or a row's `columns`, that are not
+  lists of objects) and report references that are not UUIDs return 400 where
+  upstream fails with a 500.
+- **A first dashboard save** without a name or description saves them empty;
+  upstream fails with a 500.
+- **Missing records** (an admin renaming, deleting or sharing a board that does
+  not exist, or a malformed ID) return 404 where upstream fails with a 500 or, for
+  shares, stores a share of nothing. A team that does not exist is a 404 when
+  creating a board (upstream stores it).
+- **Lists** are ordered by name unless sorted, ties broken by ID; upstream leaves
+  them unordered.
+
 ## Analytics
 
 The website dashboard's queries under `/api/websites/{id}`: `stats`, `pageviews`,
