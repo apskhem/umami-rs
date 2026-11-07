@@ -44,6 +44,20 @@ docker build -t umami-rs .                                 # or --build-arg BASE
 docker run -p 3000:3000 -e DATABASE_URL=... -e APP_SECRET=... umami-rs
 ```
 
+To build without cloning the repo, give Docker its URL as the build context
+(`#<branch, tag or commit>` picks the revision), and supply the settings from a
+`.env` file of your own (see [`.env.example`](.env.example)):
+
+```sh
+docker build -t umami-rs https://github.com/apskhem/umami-rs.git#main
+docker run -p 3000:3000 --env-file .env umami-rs
+```
+
+Docker's `--env-file` reads each line literally, so don't put a trailing
+`# comment` after a value. Inside the container `localhost` is the container
+itself: to reach a Postgres on the host, use `host.docker.internal` in
+`DATABASE_URL` (on Linux, also pass `--add-host=host.docker.internal:host-gateway`).
+
 ## Dashboard
 
 umami-server serves upstream's dashboard from `DASHBOARD_DIR` (default
