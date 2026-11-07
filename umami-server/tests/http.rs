@@ -591,3 +591,47 @@ async fn board_routes_validate_before_auth() {
     );
   }
 }
+
+#[tokio::test]
+async fn data_routes_validate_before_auth() {
+  let base = format!("/api/websites/{WEBSITE}");
+  let range = "startAt=0&endAt=1";
+  for uri in [
+    format!("{base}/event-data?startAt=0"),
+    format!("{base}/event-data?{range}&pageSize=0"),
+    format!("{base}/event-data/values?{range}"),
+    format!("{base}/event-data/values?{range}&propertyName=p&dataType=x"),
+    format!("{base}/event-data-pivot?{range}"),
+    format!("{base}/event-data-pivot/date-series?{range}&eventName=e"),
+    format!("{base}/event-data-pivot/numeric-series?{range}&eventName=e&propertyName=p&metric=max"),
+    format!("{base}/event-data-pivot/property-series?{range}&eventName=e&propertyName=p&unit=week2"),
+    format!("{base}/session-data-pivot?{range}&pageSize=x"),
+    format!("{base}/session-data/stats?{range}"),
+    format!("{base}/session-data/properties?{range}&segment=x"),
+    format!("{base}/session-data/values?{range}&dataType=1.5"),
+  ] {
+    assert_eq!(
+      get(state(""), &uri).await,
+      (StatusCode::BAD_REQUEST, bad_request()),
+      "{uri}"
+    );
+  }
+
+  // Valid requests without credentials never reach the database; routes
+  // without `timezone` or `unit` ignore them.
+  for uri in [
+    format!("{base}/event-data?{range}&page=2&pf_x=eq.y"),
+    format!("{base}/event-data/stats?{range}&timezone=Mars/Base&unit=x"),
+    format!("{base}/event-data/values?{range}&propertyName=p&dataType="),
+    format!("{base}/event-data-pivot/numeric-stats?{range}&eventName=e&propertyName=p&unit=x"),
+    format!("{base}/session-data/properties?{range}&timezone=x"),
+    format!("{base}/session-data/values?{range}"),
+    format!("{base}/event-data/{WEBSITE}"),
+  ] {
+    assert_eq!(
+      get(state(""), &uri).await,
+      (StatusCode::UNAUTHORIZED, unauthorized()),
+      "{uri}"
+    );
+  }
+}

@@ -254,6 +254,7 @@ fn split_operator(text: &str) -> (Operator, &str) {
 
 /// Upstream's `DATA_TYPE` values a property filter may name.
 const DATA_TYPES: std::ops::RangeInclusive<i32> = 1..=5;
+pub const DATA_TYPE_STRING: i32 = 1;
 pub const DATA_TYPE_NUMBER: i32 = 2;
 pub const DATA_TYPE_DATE: i32 = 4;
 pub const DATA_TYPE_ARRAY: i32 = 5;
@@ -309,6 +310,45 @@ impl PropertyFilter {
       },
     })
   }
+}
+
+/// Upstream's `parsePropertyFilters`: the `pf_<name>` parameters of the data
+/// explorer, as `dataType.operator.value` or, for strings, `operator.value`.
+/// The name drops trailing digits (which number repeated filters); malformed
+/// values are ignored, as upstream does.
+pub fn pf_filters(params: &Params) -> Vec<PropertyFilter> {
+  params
+    .iter()
+    .filter_map(|(key, value)| {
+      let name = key.strip_prefix("pf_")?;
+      let name = base_name(name);
+      // `(.*)$` without the `s` flag: no line terminators.
+      let one_line = |rest: &str| !rest.contains(['\n', '\r', '\u{2028}', '\u{2029}']);
+
+      let (first, rest) = value.split_once('.')?;
+      let typed = (!first.is_empty() && first.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| rest.split_once('.'))
+        .flatten()
+        .filter(|(operator, rest)| !operator.is_empty() && one_line(rest));
+
+      let (data_type, operator, value) = match typed {
+        Some((operator, rest)) => {
+          // `Number("007")` is 7; anything too long for a type is invalid.
+          let data_type = first.parse::<i32>().ok().filter(|t| DATA_TYPES.contains(t))?;
+          (data_type, operator, rest)
+        }
+        None if one_line(rest) => (DATA_TYPE_STRING, first, rest),
+        None => return None,
+      };
+
+      Some(PropertyFilter {
+        name: name.to_owned(),
+        data_type,
+        operator: Operator::parse(operator)?,
+        value: value.to_owned(),
+      })
+    })
+    .collect()
 }
 
 /// A cohort: the sessions that did something within a date range.
@@ -368,6 +408,11 @@ impl QueryFilters {
     }
   }
 
+  /// The filter under exactly `key`, if given.
+  pub fn get(&self, key: &str) -> Option<&FilterValue> {
+    self.entries.iter().find(|(k, _)| k == key).map(|(_, value)| value)
+  }
+
   /// The filter names given (without numeric suffixes).
   pub fn names(&self) -> impl Iterator<Item = &str> {
     self.entries.iter().map(|(key, _)| base_name(key))
@@ -422,6 +467,10 @@ pub struct Options {
   pub range: Range,
   /// Whether `timezone` is required.
   pub timezone_required: bool,
+  /// Whether the schema has `timezone` and `unit`; without them upstream
+  /// strips both, so they are neither validated nor used.
+  pub timezone: bool,
+  pub unit: bool,
 }
 
 impl Options {
@@ -432,6 +481,8 @@ impl Options {
     paging: false,
     range: Range::Dates,
     timezone_required: false,
+    timezone: true,
+    unit: true,
   };
 }
 
@@ -482,7 +533,7 @@ pub async fn from_request(db: &PgPool, params: &Params, options: Options) -> App
     }
   };
 
-  let timezone = match params.get("timezone") {
+  let timezone = match params.get("timezone").filter(|_| options.timezone) {
     Some(value) => Some(date::time_zone(db, value).await?.ok_or_else(bad)?),
     None if options.timezone_required => return Err(bad()),
     None => None,
@@ -499,6 +550,7 @@ pub async fn from_request(db: &PgPool, params: &Params, options: Options) -> App
   let (page, page_size, max_results) = (positive("page")?, positive("pageSize")?, positive("maxResults")?);
   let unit = params
     .get("unit")
+    .filter(|_| options.unit)
     .map(|value| Unit::parse(value).ok_or_else(bad))
     .transpose()?;
   let compare = params
@@ -733,6 +785,26 @@ mod tests {
     assert!(PropertyFilter::parse("9.eq.name.x").is_none());
     assert!(PropertyFilter::parse("1.zz.name.x").is_none());
     assert!(PropertyFilter::parse("1.eq.name").is_none());
+  }
+
+  #[test]
+  fn parses_explorer_filters_like_upstream() {
+    let params = Params::parse(Some(
+      "pf_plan1=eq.pro,team&pf_total=2.gt.10&pf_bad=9.eq.x&pf_op=1.zz.x&pf_none=x&pf_line=c.a%0Ab&other=eq.x",
+    ));
+    let mut parsed: Vec<_> = pf_filters(&params)
+      .into_iter()
+      .map(|f| (f.name, f.data_type, f.operator, f.value))
+      .collect();
+    parsed.sort_by(|a, b| a.0.cmp(&b.0));
+
+    assert_eq!(
+      parsed,
+      [
+        ("plan".to_owned(), 1, Operator::Equals, "pro,team".to_owned()),
+        ("total".to_owned(), 2, Operator::GreaterThan, "10".to_owned()),
+      ]
+    );
   }
 
   #[test]

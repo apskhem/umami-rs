@@ -193,6 +193,21 @@ pub async fn paged(
   Ok(page(data, count, filters))
 }
 
+/// Upstream's `pagedRawQuery` for a query that orders itself (no `orderBy`
+/// in the schema): only the page is appended.
+pub async fn paged_as_ordered(
+  db: &PgPool,
+  query: &str,
+  bindings: &Bindings,
+  filters: &QueryFilters,
+) -> AppResult<Value> {
+  let count = count(db, query, bindings, filters).await?;
+  let (size, offset) = page_window(filters);
+  let data = rows(db, &format!("{query}\nlimit {size} offset {offset}"), bindings).await?;
+
+  Ok(page(data, count, filters))
+}
+
 /// Errors caused by the request's values (a bad regex or date in a filter) are a
 /// 400; upstream fails with a 500.
 fn database_error(error: sqlx::Error) -> AppError {
@@ -221,8 +236,9 @@ fn row_to_json(row: &PgRow) -> Result<Map<String, Value>, sqlx::Error> {
         "INT8" => json!(row.try_get::<i64, _>(index)?),
         "INT4" => json!(row.try_get::<i32, _>(index)?),
         "INT2" => json!(row.try_get::<i16, _>(index)?),
-        "FLOAT8" => json!(row.try_get::<f64, _>(index)?),
-        "FLOAT4" => json!(row.try_get::<f32, _>(index)?),
+        // JavaScript numbers: whole floats print as integers.
+        "FLOAT8" => js::number(row.try_get::<f64, _>(index)?),
+        "FLOAT4" => js::number(f64::from(row.try_get::<f32, _>(index)?)),
         "BOOL" => json!(row.try_get::<bool, _>(index)?),
         // Prisma's Decimal serializes as a string, without trailing zeros.
         "NUMERIC" => json!(row.try_get::<Decimal, _>(index)?.normalize().to_string()),
@@ -239,6 +255,7 @@ fn row_to_json(row: &PgRow) -> Result<Map<String, Value>, sqlx::Error> {
         }
         "UUID" => json!(row.try_get::<Uuid, _>(index)?),
         "JSON" | "JSONB" => row.try_get::<Value, _>(index)?,
+        "TEXT[]" | "VARCHAR[]" => json!(row.try_get::<Vec<Option<String>>, _>(index)?),
         _ => json!(row.try_get::<String, _>(index)?),
       }
     };
@@ -620,6 +637,65 @@ fn session_property_filter_query(list: &[PropertyFilter], filters: &QueryFilters
   );
 
   (sql, bindings)
+}
+
+/// Whose data a data-explorer filter looks at.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DataOf {
+  Event,
+  Session,
+}
+
+/// Upstream's `getPropertyFilterQuery`: one condition per `pf_` filter, each
+/// requiring the event (or session) to have that data. Binds the filters'
+/// keys and values into `bindings`.
+pub fn data_filter_query(
+  list: &[PropertyFilter],
+  of: DataOf,
+  filters: &QueryFilters,
+  bindings: &mut Bindings,
+) -> String {
+  let mut parts = Vec::new();
+
+  for (index, filter) in list.iter().enumerate() {
+    let key_param = format!("pf_key_{index}");
+    bindings.set(&key_param, Param::Text(filter.name.clone()));
+    let Some(condition) = property_condition(filter, &format!("pf_val_{index}"), filters, bindings) else {
+      continue;
+    };
+    let data_type = filter.data_type;
+
+    parts.push(match of {
+      DataOf::Session => {
+        format!(
+          "and exists (
+      select 1
+      from session_data
+      where website_id = website_event.website_id
+        and session_id = website_event.session_id
+        and data_key = {{{{{key_param}}}}}
+        and data_type = {data_type}
+        and {condition}
+    )"
+        )
+      }
+      DataOf::Event => {
+        format!(
+          "and website_event.event_id in (
+      select website_event_id
+      from event_data
+      where website_id = {{{{websiteId::uuid}}}}
+        and created_at between {{{{startDate}}}} and {{{{endDate}}}}
+        and data_key = {{{{{key_param}}}}}
+        and data_type = {data_type}
+        and {condition}
+    )"
+        )
+      }
+    });
+  }
+
+  parts.join("\n")
 }
 
 /// JavaScript's `parseFloat(value) || 0`: the longest numeric prefix, else 0.

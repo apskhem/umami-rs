@@ -71,7 +71,7 @@ const BREAKDOWNS: &[&str] = &[
 /// The request's filters for a website the caller may view in one of
 /// `sections`, in upstream's order: parameters (400), authentication (401),
 /// permission (401), then the website's own filters.
-async fn authorize(
+pub(super) async fn authorize(
   state: &AppState,
   auth: AppResult<Auth>,
   website_id: &str,

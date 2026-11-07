@@ -228,6 +228,25 @@ Differences from upstream:
 - Time zones are those Postgres knows (upstream checks with JavaScript's `Intl`,
   which also accepts offsets such as `+05:30`).
 
+## Event and session data
+
+The custom data sent with events and `identify` calls, under
+`/api/websites/{id}`: `event-data` (the events with their data, one event's
+data, and its `events`, `fields`, `properties`, `stats` and `values`), the event
+explorer (`event-data-pivot` with its `array-series`, `date-series`,
+`numeric-series`, `numeric-stats` and `property-series`), and the session
+explorer (`session-data-pivot`, and `session-data` with the same series,
+`properties`, `stats` and `values`). They take the analytics filters plus the
+explorers' `pf_<property>` filters (`dataType.operator.value`), and, as upstream,
+ignore `timezone` and `unit` on routes whose schema lacks them. Share links see
+event data if they enable events, session data if they enable sessions.
+
+Differences from upstream:
+
+- Lists break ties by their remaining columns (upstream leaves them to the
+  database), and an event's properties are listed by name.
+- A malformed event ID is a 404 where upstream fails with a 500.
+
 ## Tracker script
 
 `/script.js` serves upstream's tracker exactly as the v3.4.1 release image ships it,

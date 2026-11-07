@@ -5,6 +5,7 @@
 //! fixed order, which upstream leaves to the database.
 
 pub mod charts;
+pub mod data;
 pub mod date;
 pub mod events;
 pub mod filters;
