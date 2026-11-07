@@ -74,6 +74,7 @@ impl Harness {
       db: PgPoolOptions::new().connect_with(options).await.unwrap(),
       config: Arc::new(config),
       geo: None,
+      dashboard: None,
     };
 
     Self {

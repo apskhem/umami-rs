@@ -36,6 +36,7 @@ jsonwebtoken.workspace = true
 maxminddb.workspace = true
 mimalloc.workspace = true
 pbkdf2.workspace = true
+percent-encoding.workspace = true
 qrcode.workspace = true
 regex.workspace = true
 serde.workspace = true

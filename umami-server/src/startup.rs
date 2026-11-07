@@ -9,6 +9,7 @@ use crate::config::{
   CollectConfig,
   Config,
 };
+use crate::dashboard::Dashboard;
 
 /// Startup database check, mirroring upstream's `scripts/check-db.js`: verify
 /// connectivity and the Postgres version, then apply pending migrations.
@@ -60,6 +61,27 @@ pub fn open_geo_database(config: &CollectConfig) -> anyhow::Result<Option<GeoDat
   tracing::info!(path = %path.display(), "loaded GeoLite2 database");
 
   Ok(Some(database))
+}
+
+/// Loads the dashboard build. Without one the server is headless; that is an error
+/// only if `DASHBOARD_DIR` names a missing directory.
+pub fn open_dashboard(config: &Config) -> anyhow::Result<Option<Dashboard>> {
+  let path = &config.dashboard.dir;
+
+  if config.dashboard.disabled {
+    tracing::info!("dashboard disabled (DISABLE_UI)");
+    return Ok(None);
+  }
+  if !path.exists() && !config.dashboard.dir_explicit {
+    tracing::info!(path = %path.display(), "no dashboard build; serving the API only");
+    return Ok(None);
+  }
+
+  let dashboard =
+    Dashboard::load(config).with_context(|| format!("unable to load the dashboard in {}", path.display()))?;
+  tracing::info!(path = %path.display(), "loaded dashboard");
+
+  Ok(Some(dashboard))
 }
 
 /// Resolves on Ctrl-C or, on Unix, SIGTERM.

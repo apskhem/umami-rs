@@ -54,12 +54,14 @@ async fn main() -> anyhow::Result<()> {
   );
 
   let geo = startup::open_geo_database(&config.collect)?;
+  let dashboard = startup::open_dashboard(&config)?;
   crate_ua_rules::init();
 
   let state = AppState {
     db,
     config: Arc::new(config),
     geo: geo.map(Arc::new),
+    dashboard: dashboard.map(Arc::new),
   };
 
   axum::serve(listener, app(state).into_make_service_with_connect_info::<SocketAddr>())

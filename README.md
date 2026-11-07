@@ -1,8 +1,10 @@
 # umami-rs server
 
-A headless Rust backend that is a drop-in replacement for [Umami](https://umami.is)
+A Rust backend that is a drop-in replacement for [Umami](https://umami.is)
 **v3.4.1** on PostgreSQL: same database schema, same JSON API, so existing Umami
 databases, the official tracker script and the official dashboard work against it.
+It also serves the official dashboard, built from upstream's source as static
+files, so no Node.js server is needed (see [Dashboard](#dashboard)).
 
 ## Layout
 
@@ -12,6 +14,7 @@ databases, the official tracker script and the official dashboard work against i
 | `umami-server` | The axum HTTP server (`umami-server` binary). |
 | `crate-ua-rules` | User-agent classification (bots, browser, OS, device type), ported from the JS libraries upstream uses. Standalone: depends only on `regex` and `fancy-regex`. |
 | `parity` | Differential tests that run upstream Umami and umami-rs side by side and compare their responses and database rows. |
+| `tools/dashboard` | Turns upstream's Next.js app into a static export that umami-server serves (see [Dashboard](#dashboard)). |
 | `tools/tracker` | Fetches upstream's built tracker and session recorder scripts (`umami-server/assets/script.js` and `recorder.js`) from its release image. |
 | `tools/ua-rules` | Generates `crate-ua-rules`' rule tables and parity fixtures from the JS libraries upstream uses. |
 
@@ -33,12 +36,62 @@ upstream's `check-db` script does. A fresh database gets upstream's default logi
 The `Dockerfile` builds a static (musl) binary into a `scratch` image of about
 13 MB: no shell or libc, running as UID 65534, with `umami-server healthcheck` as
 its healthcheck. Mount a GeoLite2 database at `/app/geo` for geolocation, as with
-upstream's image.
+upstream's image. It also builds the dashboard into `/app/dashboard`, which brings
+the image to about 23 MB. As with upstream's image, `BASE_PATH` is a build argument:
 
 ```sh
-docker build -t umami-rs .
+docker build -t umami-rs .                                 # or --build-arg BASE_PATH=/analytics
 docker run -p 3000:3000 -e DATABASE_URL=... -e APP_SECRET=... umami-rs
 ```
+
+## Dashboard
+
+umami-server serves upstream's dashboard from `DASHBOARD_DIR` (default
+`dashboard`, i.e. `/app/dashboard` in the Docker image). Without that directory
+it serves the API only, and with `DISABLE_UI` it ignores it.
+
+The files are built from upstream's v3.4.1 source by the Dockerfile's `dashboard`
+stage. To build them for `cargo run`:
+
+```sh
+docker build --target dashboard --output type=local,dest=dashboard .
+```
+
+Upstream's pages are thin server components around client components that load
+everything from the API, so `tools/dashboard/prepare.mts` rewrites the app into a
+static export. It replaces the page tree with one app shell, whose client-side
+router is generated from upstream's `page.tsx` and `layout.tsx` files, and it
+strips the server-side parts. If an upstream release adds server-side logic the
+script doesn't recognise, the build fails. The script also writes `routes.json`,
+which the server reads to:
+
+- serve the shell for every dashboard page, and Next's 404 page with a 404 for
+  anything else;
+- apply upstream's `next.config.ts` redirects (`/settings`, `/admin`, `/teams/{id}`
+  and others), its `/teams/{teamId}/…` rewrite and Next's trailing-slash
+  redirect;
+- answer Next's page-data and prefetch requests (`<page>.txt`,
+  `<page>/__next.<segment>.txt`) with the shell's own, so navigation stays in the
+  browser;
+- reject builds made for a different `BASE_PATH`, which Next bakes into every
+  asset URL.
+
+Files are served with Next's caching (`/_next/static` is immutable), conditional
+requests, and gzip or Brotli copies precompressed at build time. Every response
+carries upstream's `Content-Security-Policy` (with `ALLOWED_FRAME_URLS`) and
+`X-DNS-Prefetch-Control`. `DISABLE_LOGIN` answers `/login` with a 403, as
+upstream's Docker image does.
+
+Differences from upstream:
+
+- Sessions and replays opened from a list show as full pages, not as a modal
+  over the list (upstream's intercepting `@modal` routes need a server).
+- Website, link and pixel pages don't check on the server that the record
+  exists; the page loads it from the API instead (upstream renders an empty page).
+- Page titles are set in the browser, and the HTML has no server-rendered content.
+- The test console (`/console/{websiteId}`, `ENABLE_TEST_CONSOLE`) is never
+  enabled, and `API_URL` and `CLOUD_MODE`, which are build-time or Umami Cloud
+  settings upstream, are not supported.
 
 ## Event collection
 

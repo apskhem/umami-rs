@@ -6,6 +6,7 @@ use uuid::Uuid;
 use crate::collect::GeoDatabase;
 use crate::config::Config;
 use crate::crypto;
+use crate::dashboard::Dashboard;
 
 /// Shared, cheaply cloneable state available to every handler.
 #[derive(Clone)]
@@ -14,6 +15,8 @@ pub struct AppState {
   pub config: Arc<Config>,
   /// The MaxMind database for geolocation, if one is installed.
   pub geo: Option<Arc<GeoDatabase>>,
+  /// The static dashboard build, if one is installed.
+  pub dashboard: Option<Arc<Dashboard>>,
 }
 
 impl AppState {

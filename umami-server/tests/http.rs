@@ -39,6 +39,7 @@ fn state_with(vars: &[(&str, &str)]) -> AppState {
     db,
     config: Arc::new(config),
     geo: None,
+    dashboard: None,
   }
 }
 

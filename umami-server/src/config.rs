@@ -38,7 +38,23 @@ pub struct Config {
   /// upstream, an invalid key means 2FA is not configured rather than an error.
   pub two_factor_key: Option<[u8; 32]>,
   pub collect: CollectConfig,
+  pub dashboard: DashboardConfig,
   pub public: PublicConfig,
+}
+
+/// Settings for serving the dashboard (see `dashboard.rs`).
+#[derive(Clone, Debug)]
+pub struct DashboardConfig {
+  /// `DASHBOARD_DIR`, or `dashboard`: the static build from `tools/dashboard`.
+  pub dir: PathBuf,
+  /// Whether `DASHBOARD_DIR` was set (a missing explicit directory is an error).
+  pub dir_explicit: bool,
+  /// `DISABLE_UI`: serve the API only.
+  pub disabled: bool,
+  /// `DISABLE_LOGIN`: `/login` answers 403, as upstream's Docker proxy does.
+  pub disable_login: bool,
+  /// `ALLOWED_FRAME_URLS`: extra `frame-ancestors` in the Content-Security-Policy.
+  pub allowed_frame_urls: Option<String>,
 }
 
 /// Settings the dashboard reads from `GET /api/config`.
@@ -194,6 +210,13 @@ impl Config {
         tracker_script_name: get("TRACKER_SCRIPT_NAME"),
       },
       collect,
+      dashboard: DashboardConfig {
+        dir: get("DASHBOARD_DIR").map_or_else(|| PathBuf::from("dashboard"), PathBuf::from),
+        dir_explicit: get("DASHBOARD_DIR").is_some(),
+        disabled: get("DISABLE_UI").is_some(),
+        disable_login: get("DISABLE_LOGIN").is_some(),
+        allowed_frame_urls: get("ALLOWED_FRAME_URLS"),
+      },
       database_url,
     })
   }
@@ -223,6 +246,7 @@ impl fmt::Debug for Config {
       .field("two_factor_key", &self.two_factor_key.map(|_| "<redacted>"))
       .field("public", &self.public)
       .field("collect", &self.collect)
+      .field("dashboard", &self.dashboard)
       .finish()
   }
 }

@@ -23,6 +23,7 @@ async fn serve(base_path: &str) -> u16 {
     db: PgPoolOptions::new().connect_lazy_with(umami_db::connect_options(&config.database_url).unwrap()),
     config: Arc::new(config),
     geo: None,
+    dashboard: None,
   };
 
   let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

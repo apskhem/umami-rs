@@ -1,0 +1,113 @@
+{
+  "basePath": "",
+  "routes": [
+    "^/$",
+    "^/boards$",
+    "^/dashboard$",
+    "^/links$",
+    "^/pixels$",
+    "^/teams$",
+    "^/websites$",
+    "^/login$",
+    "^/logout$",
+    "^/sso$",
+    "^/admin/security$",
+    "^/admin/teams$",
+    "^/admin/users$",
+    "^/admin/websites$",
+    "^/boards/create$",
+    "^/dashboard/edit$",
+    "^/settings/api-keys$",
+    "^/settings/preferences$",
+    "^/settings/profile$",
+    "^/settings/security$",
+    "^/settings/teams$",
+    "^/settings/websites$",
+    "^/login/two-factor$",
+    "^/admin/teams/([^/]+)$",
+    "^/admin/users/([^/]+)$",
+    "^/admin/websites/([^/]+)$",
+    "^/settings/teams/([^/]+)$",
+    "^/settings/websites/([^/]+)$",
+    "^/boards/([^/]+)$",
+    "^/console/([^/]+)$",
+    "^/links/([^/]+)$",
+    "^/pixels/([^/]+)$",
+    "^/websites/([^/]+)$",
+    "^/boards/([^/]+)/design$",
+    "^/boards/([^/]+)/edit$",
+    "^/links/([^/]+)/edit$",
+    "^/pixels/([^/]+)/edit$",
+    "^/websites/([^/]+)/attribution$",
+    "^/websites/([^/]+)/breakdown$",
+    "^/websites/([^/]+)/funnels$",
+    "^/websites/([^/]+)/goals$",
+    "^/websites/([^/]+)/heatmaps$",
+    "^/websites/([^/]+)/journeys$",
+    "^/websites/([^/]+)/performance$",
+    "^/websites/([^/]+)/retention$",
+    "^/websites/([^/]+)/revenue$",
+    "^/websites/([^/]+)/utm$",
+    "^/websites/([^/]+)/cohorts$",
+    "^/websites/([^/]+)/compare$",
+    "^/websites/([^/]+)/events$",
+    "^/websites/([^/]+)/realtime$",
+    "^/websites/([^/]+)/replays$",
+    "^/websites/([^/]+)/segments$",
+    "^/websites/([^/]+)/sessions$",
+    "^/websites/([^/]+)/settings$",
+    "^/websites/([^/]+)/replays/([^/]+)$",
+    "^/websites/([^/]+)/sessions/([^/]+)$",
+    "^/share/([^/]+)(?:/(.+))?$"
+  ],
+  "redirects": [
+    {
+      "regex": "^/teams/([^/]+)/dashboard/edit$",
+      "names": [
+        "id"
+      ],
+      "destination": "/dashboard/edit"
+    },
+    {
+      "regex": "^/teams/([^/]+)/dashboard$",
+      "names": [
+        "id"
+      ],
+      "destination": "/dashboard"
+    },
+    {
+      "regex": "^/settings$",
+      "names": [],
+      "destination": "/settings/preferences"
+    },
+    {
+      "regex": "^/teams/([^/]+)$",
+      "names": [
+        "id"
+      ],
+      "destination": "/teams/:id/websites"
+    },
+    {
+      "regex": "^/teams/([^/]+)/settings$",
+      "names": [
+        "id"
+      ],
+      "destination": "/teams/:id/settings/preferences"
+    },
+    {
+      "regex": "^/admin$",
+      "names": [],
+      "destination": "/admin/users"
+    }
+  ],
+  "rewrites": [
+    {
+      "regex": "^/teams/([^/]+)(?:/(.*))?$",
+      "names": [
+        "teamId",
+        "path"
+      ],
+      "destination": "/:path*"
+    }
+  ]
+}
