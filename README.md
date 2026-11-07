@@ -228,6 +228,24 @@ Differences from upstream:
 - Time zones are those Postgres knows (upstream checks with JavaScript's `Intl`,
   which also accepts offsets such as `+05:30`).
 
+## Export
+
+`GET /api/websites/{id}/export` backs the dashboard's download button: the
+website's top events, pages, referrers, browsers, OSes, devices and countries
+for the period (up to 500 rows each), as `events.csv`, `pages.csv`,
+`referrers.csv`, `browsers.csv`, `os.csv`, `devices.csv` and `countries.csv` in a
+zip, returned base64-encoded as `{"zip": "..."}`. The CSV files are written as
+upstream's Papa Parse writes them (CRLF line breaks, quoting only where needed,
+an empty file for no rows), with values that start like a spreadsheet formula
+prefixed with `'`. As upstream, the route takes only the date range (and
+`timezone`, `unit`, `compare` and paging, which it validates but does not use),
+ignores filters, and is open to signed-in users who can view the website, not to
+share links.
+
+Differences from upstream:
+
+- A malformed website ID is a 404; upstream fails with a 500.
+
 ## Event and session data
 
 The custom data sent with events and `identify` calls, under
@@ -334,6 +352,21 @@ and update `SCRIPT_SHA256` and `RECORDER_SHA256` in `umami-server/src/tracker.rs
 
 Not supported: `TRACKER_SCRIPT_URL` (proxying the script from elsewhere) and
 `COLLECT_API_HOST` (a build-time option upstream; use `data-host-url` instead).
+
+## Upstream routes not implemented
+
+None of these are used by the dashboard against a self-hosted server:
+
+- `/api/reports/*` and `/api/websites/{id}/reports`: upstream's legacy (v2)
+  report API, which it serves from `compat/` through rewrites. The dashboard
+  uses the newer report routes (see [Reports](#reports)); scripts written
+  against the v2 API get a 404.
+- `/api/auth/subscription`: Umami Cloud billing. The dashboard asks for it only
+  in cloud mode, which `/api/config` never reports.
+- `/telemetry.js` (`/api/scripts/telemetry`): upstream's anonymous usage ping.
+  The server behaves as if `DISABLE_TELEMETRY` were set, except that the script
+  is a 404 rather than an empty one.
+- `/mcp`: upstream's Model Context Protocol server for AI assistants.
 
 ## Configuration
 

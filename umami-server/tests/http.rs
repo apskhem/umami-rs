@@ -876,3 +876,35 @@ async fn serves_the_recorder_script() {
   .await;
   assert_eq!(body, Value::String(TRACKER.to_owned()));
 }
+
+#[tokio::test]
+async fn export_validates_before_auth() {
+  let export = format!("/api/websites/{WEBSITE}/export");
+  let range = "startAt=0&endAt=1";
+  for uri in [
+    export.clone(),
+    format!("{export}?startAt=0"),
+    format!("{export}?{range}&pageSize=0"),
+    format!("{export}?{range}&unit=week2"),
+    format!("{export}?{range}&compare=next"),
+  ] {
+    assert_eq!(
+      get(state(""), &uri).await,
+      (StatusCode::BAD_REQUEST, bad_request()),
+      "{uri}"
+    );
+  }
+
+  // Valid requests without credentials never reach the database; filters are
+  // not part of upstream's schema, so even malformed ones are ignored.
+  for uri in [
+    format!("{export}?{range}"),
+    format!("{export}?startDate=2026-01-01&endDate=2026-02-01&format=json&browser=x&segment=y&cohort=z"),
+  ] {
+    assert_eq!(
+      get(state(""), &uri).await,
+      (StatusCode::UNAUTHORIZED, unauthorized()),
+      "{uri}"
+    );
+  }
+}

@@ -88,7 +88,7 @@ pub async fn recorder(State(state): State<AppState>, Path(website_id): Path<Stri
 /// may use (upstream's `canViewAuthenticatedWebsite`), in upstream's order:
 /// parameters (400), authentication and permission (401), then the website's
 /// own filters.
-async fn authorize(
+pub(super) async fn authorize(
   state: &AppState,
   auth: AppResult<Auth>,
   website_id: &str,

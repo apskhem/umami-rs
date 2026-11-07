@@ -51,6 +51,7 @@ mod body;
 mod charts;
 mod config;
 mod data;
+mod export;
 mod heartbeat;
 mod links;
 mod me;
@@ -309,6 +310,7 @@ pub fn router(config: &Config) -> Router<AppState> {
       get(replays::session_list),
     )
     .route("/api/websites/{websiteId}/heatmaps", get(replays::heatmaps))
+    .route("/api/websites/{websiteId}/export", get(export::export))
     .route("/api/realtime/{websiteId}", get(analytics::realtime))
     .route("/api/websites/{websiteId}/reset", post(websites::reset))
     .route(

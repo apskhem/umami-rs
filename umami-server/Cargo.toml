@@ -51,6 +51,7 @@ tracing-subscriber.workspace = true
 umami-db.workspace = true
 url.workspace = true
 uuid.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
