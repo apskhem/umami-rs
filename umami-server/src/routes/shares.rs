@@ -15,40 +15,46 @@ use serde_json::{
   Value,
   json,
 };
-use uuid::Uuid;
 
-use super::body;
 use super::params::{
   PAGING,
   Params,
 };
+use super::{
+  body,
+  ok,
+};
+use crate::analytics::filters::check_filter_params;
 use crate::auth::{
   Auth,
   AuthKind,
   AuthUser,
-  store,
 };
-use crate::collect::js;
 use crate::error::{
   AppError,
   AppResult,
 };
 use crate::permissions::{
   self as can,
-  ENTITY_BOARD,
-  ENTITY_LINK,
-  ENTITY_PIXEL,
-  ENTITY_WEBSITE,
+  EntityType,
+  Owner,
   WEBSITE_DELETE,
   WEBSITE_UPDATE,
   db_id,
 };
+use crate::queries::board::{
+  self,
+  EntityIds,
+};
 use crate::queries::share::{
   self,
   NewShare,
+  SLUG_LENGTH,
+  SLUG_TAKEN,
 };
 use crate::queries::{
   team,
+  user,
   website,
 };
 use crate::state::AppState;
@@ -58,67 +64,17 @@ use crate::{
   zod,
 };
 
-const SLUG_TAKEN: &str = "That share ID is already taken.";
 /// Upstream's `SHARE_TOKEN_TYPE`.
 const SHARE_TOKEN_TYPE: &str = "share";
-/// Length of the slugs upstream generates.
-const SLUG_LENGTH: usize = 16;
-
-/// `anyObjectParam`: a JSON object, whatever its values.
-fn object_param<'a>(object: &'a Map<String, Value>, key: &str) -> AppResult<Option<&'a Value>> {
-  match object.get(key) {
-    None => Ok(None),
-    Some(value @ Value::Object(_)) => Ok(Some(value)),
-    Some(_) => Err(AppError::bad_request()),
-  }
-}
 
 /// A share name: `z.string().max(200)`.
 fn name(object: &Map<String, Value>) -> AppResult<&str> {
   body::max_len(body::string(object, "name")?, 200)
 }
 
-/// `z.coerce.number().int()`, for the entity types upstream's `INTEGER` column
-/// can hold.
-fn coerce_int(value: Option<&Value>) -> AppResult<i32> {
-  let number = match value {
-    Some(Value::Number(n)) => n.as_f64(),
-    Some(Value::String(s)) => Some(js::string_to_number(s)),
-    Some(Value::Bool(b)) => Some(f64::from(u8::from(*b))),
-    Some(Value::Null) => Some(0.0),
-    // `Number(undefined)` and objects are `NaN`.
-    _ => None,
-  };
-
-  number
-    .filter(|n| n.fract() == 0.0 && *n >= f64::from(i32::MIN) && *n <= f64::from(i32::MAX))
-    .map(|n| n as i32)
-    .ok_or_else(AppError::bad_request)
-}
-
-/// Validates upstream's `filterParams`, which the share list's schema includes
-/// but does not use.
-fn check_filter_params(params: &Params) -> AppResult<()> {
-  for key in ["segment", "cohort"] {
-    if params.get(key).is_some_and(|value| zod::uuid(value).is_none()) {
-      return Err(AppError::bad_request());
-    }
-  }
-  if params
-    .get("eventType")
-    .is_some_and(|value| zod::positive_int(value).is_none())
-  {
-    return Err(AppError::bad_request());
-  }
-  if params.get("match").is_some_and(|value| !matches!(value, "all" | "any")) {
-    return Err(AppError::bad_request());
-  }
-
-  Ok(())
-}
-
-fn new_id(state: &AppState) -> Uuid {
-  crypto::random_uuid(state.config.collect.use_uuidv7)
+/// The required `parameters` (`anyObjectParam`), as stored.
+fn parameters(object: &Map<String, Value>) -> AppResult<Value> {
+  Ok(Value::Object(body::object_field(object, "parameters")?.clone()))
 }
 
 /// `GET /api/websites/{websiteId}/shares`: the website's share links, newest first.
@@ -133,9 +89,7 @@ pub async fn website_list(
   let filters = params.filters(PAGING)?;
 
   let auth = auth?;
-  if !can::can_view_authenticated_website(&state.db, &auth, &website_id).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_view_authenticated_website(&state.db, &auth, &website_id).await?)?;
 
   Ok(Json(share::list(&state.db, db_id(&website_id)?, &filters).await?))
 }
@@ -151,12 +105,12 @@ pub async fn website_create(
   let body = body::parse(&body);
   let object = body::object(&body)?;
   let name = name(object)?;
-  let parameters = object_param(object, "parameters")?.cloned().unwrap_or(json!({}));
+  let parameters = body::optional_object(object, "parameters")?
+    .cloned()
+    .unwrap_or_default();
 
   let auth = auth?;
-  if !can::can_change_website(&state.db, &auth, &website_id, WEBSITE_UPDATE).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_change_website(&state.db, &auth, &website_id, WEBSITE_UPDATE).await?)?;
   // Admins pass for any ID; upstream then shares a website that does not exist.
   let Some(found) = website::get(&state.db, &website_id).await? else {
     return Err(AppError::NotFound);
@@ -165,12 +119,12 @@ pub async fn website_create(
   let created = share::create(
     &state.db,
     &NewShare {
-      id: new_id(&state),
+      id: state.new_id(),
       entity_id: found.website_id,
-      share_type: ENTITY_WEBSITE,
+      kind: EntityType::Website,
       name,
       slug: &crypto::random_chars(SLUG_LENGTH),
-      parameters: &parameters,
+      parameters: Value::Object(parameters),
     },
   )
   .await
@@ -184,25 +138,23 @@ pub async fn create(State(state): State<AppState>, auth: AppResult<Auth>, body: 
   let body = body::parse(&body);
   let object = body::object(&body)?;
   let entity_id = body::uuid(body::string(object, "entityId")?)?;
-  let share_type = coerce_int(object.get("shareType"))?;
+  let share_type = zod::coerce_int(object.get("shareType")).ok_or_else(AppError::bad_request)?;
   let name = name(object)?;
   let slug = body::optional_string(object, "slug")?
     .map(|slug| body::max_len(slug, 100))
     .transpose()?;
-  let parameters = object_param(object, "parameters")?.ok_or_else(AppError::bad_request)?;
+  let parameters = parameters(object)?;
 
   let auth = auth?;
   let id = entity_id.to_string();
-  if !can::can_access_entity(&state.db, &auth, &id, Some(WEBSITE_UPDATE)).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_access_entity(&state.db, &auth, &id, Some(WEBSITE_UPDATE)).await?)?;
 
   // Upstream shares any ID as any type; a share of a missing entity, or one
   // whose type is not the entity's, can never be opened.
   let Some(entity) = can::entity(&state.db, &id).await? else {
     return Err(AppError::NotFound);
   };
-  if entity.kind != share_type {
+  if EntityType::from_code(share_type) != Some(entity.kind) {
     return Err(AppError::BadRequest(
       "The share type does not match the entity.".to_owned(),
     ));
@@ -220,9 +172,9 @@ pub async fn create(State(state): State<AppState>, auth: AppResult<Auth>, body: 
   let created = share::create(
     &state.db,
     &NewShare {
-      id: new_id(&state),
+      id: state.new_id(),
       entity_id,
-      share_type,
+      kind: entity.kind,
       name,
       slug,
       parameters,
@@ -243,9 +195,8 @@ async fn find(state: &AppState, share_id: &str) -> AppResult<share::Share> {
 /// `GET /api/share/id/{shareId}`: the share link.
 pub async fn get(State(state): State<AppState>, auth: Auth, Path(share_id): Path<String>) -> AppResult<Json<Value>> {
   let found = find(&state, &share_id).await?;
-  if !can::can_access_entity(&state.db, &auth, &found.entity_id.to_string(), None).await? {
-    return Err(AppError::Unauthorized);
-  }
+  let entity_id = found.entity_id.to_string();
+  can::require(can::can_access_entity(&state.db, &auth, &entity_id, None).await?)?;
 
   Ok(Json(found.to_json()))
 }
@@ -262,16 +213,14 @@ pub async fn update(
   let object = body::object(&body)?;
   let name = name(object)?;
   let slug = body::max_len(body::string(object, "slug")?, 100)?;
-  let parameters = object_param(object, "parameters")?.ok_or_else(AppError::bad_request)?;
+  let parameters = parameters(object)?;
 
   let auth = auth?;
   let found = find(&state, &share_id).await?;
   let entity_id = found.entity_id.to_string();
-  if !can::can_access_entity(&state.db, &auth, &entity_id, Some(WEBSITE_UPDATE)).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_access_entity(&state.db, &auth, &entity_id, Some(WEBSITE_UPDATE)).await?)?;
 
-  let updated = share::update(&state.db, found.share_id, name, slug, parameters)
+  let updated = share::update(&state.db, found.share_id, name, slug, &parameters)
     .await
     .map_err(|e| AppError::taken(e, SLUG_TAKEN))?
     .ok_or(AppError::NotFound)?;
@@ -283,15 +232,13 @@ pub async fn update(
 pub async fn delete(State(state): State<AppState>, auth: Auth, Path(share_id): Path<String>) -> AppResult<Json<Value>> {
   let found = find(&state, &share_id).await?;
   let entity_id = found.entity_id.to_string();
-  if !can::can_access_entity(&state.db, &auth, &entity_id, Some(WEBSITE_DELETE)).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_access_entity(&state.db, &auth, &entity_id, Some(WEBSITE_DELETE)).await?)?;
 
   if !share::delete(&state.db, found.share_id).await? {
     return Err(AppError::NotFound);
   }
 
-  Ok(Json(json!({ "ok": true })))
+  Ok(ok())
 }
 
 /// `GET /api/share/{slug}`: opens a share link, without signing in. Returns what
@@ -301,52 +248,36 @@ pub async fn delete(State(state): State<AppState>, auth: Auth, Path(share_id): P
 /// in Redis; umami-rs has no Redis, as upstream without it.
 pub async fn resolve(State(state): State<AppState>, Path(slug): Path<String>) -> AppResult<Json<Value>> {
   let found = share::by_slug(&state.db, &slug).await?.ok_or(AppError::NotFound)?;
-  let entity_id = found.entity_id.to_string();
+  let kind = EntityType::from_code(found.share_type).ok_or(AppError::NotFound)?;
+  let entity_id = json!(found.entity_id);
 
   let mut data = Map::new();
   data.insert("shareId".to_owned(), json!(found.share_id));
   data.insert("shareType".to_owned(), json!(found.share_type));
   data.insert("parameters".to_owned(), found.parameters.clone());
 
-  let table = match found.share_type {
-    ENTITY_WEBSITE => "website",
-    ENTITY_LINK => "link",
-    ENTITY_PIXEL => "pixel",
-    ENTITY_BOARD => "board",
-    _ => return Err(AppError::NotFound),
-  };
-  let Some(entity) = owned(&state, table, found.entity_id).await? else {
-    return Err(AppError::NotFound);
-  };
+  if kind == EntityType::Board {
+    let board = board::get(&state.db, found.entity_id)
+      .await?
+      .ok_or(AppError::NotFound)?;
+    let ids = shared_board_entities(&state, board.owner(), board.entity_ids()).await?;
 
-  match found.share_type {
-    ENTITY_BOARD => {
-      let (kind, parameters): (String, Value) =
-        sqlx::query_as("select type, parameters from board where board_id = $1")
-          .bind(found.entity_id)
-          .fetch_one(&state.db)
-          .await?;
-      let ids = board_entity_ids(Some(&kind), &parameters);
-      let [websites, pixels, links] = shared_board_entities(&state, &entity, ids).await?;
-
-      data.insert("boardId".to_owned(), json!(entity_id));
-      data.insert("websiteIds".to_owned(), json!(websites));
-      data.insert("pixelIds".to_owned(), json!(pixels));
-      data.insert("linkIds".to_owned(), json!(links));
-    }
-    ENTITY_WEBSITE => {
-      data.insert("websiteId".to_owned(), json!(entity_id));
+    data.insert("boardId".to_owned(), entity_id);
+    data.insert("websiteIds".to_owned(), json!(ids.websites));
+    data.insert("pixelIds".to_owned(), json!(ids.pixels));
+    data.insert("linkIds".to_owned(), json!(ids.links));
+  } else {
+    if can::owner(&state.db, kind, found.entity_id).await?.is_none() {
+      return Err(AppError::NotFound);
     }
     // Upstream also names a link or pixel as `websiteId`, which the
     // dashboard's routes take it as.
-    ENTITY_PIXEL => {
-      data.insert("websiteId".to_owned(), json!(entity_id));
-      data.insert("pixelId".to_owned(), json!(entity_id));
-    }
-    _ => {
-      data.insert("websiteId".to_owned(), json!(entity_id));
-      data.insert("linkId".to_owned(), json!(entity_id));
-    }
+    data.insert("websiteId".to_owned(), entity_id.clone());
+    match kind {
+      EntityType::Pixel => data.insert("pixelId".to_owned(), entity_id),
+      EntityType::Link => data.insert("linkId".to_owned(), entity_id),
+      _ => None,
+    };
   }
 
   let mut claims = data.clone();
@@ -357,119 +288,29 @@ pub async fn resolve(State(state): State<AppState>, Path(slug): Path<String>) ->
   Ok(Json(Value::Object(data)))
 }
 
-/// The owner of a website, link, pixel or board (by `table`), deleted or not.
-async fn owned(state: &AppState, table: &str, id: Uuid) -> sqlx::Result<Option<Owner>> {
-  let owner: Option<(Option<Uuid>, Option<Uuid>)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-    "select user_id, team_id from {table} where {table}_id = $1"
-  )))
-  .bind(id)
-  .fetch_optional(&state.db)
-  .await?;
-
-  Ok(owner.map(|(user_id, team_id)| Owner { user_id, team_id }))
-}
-
-struct Owner {
-  user_id: Option<Uuid>,
-  team_id: Option<Uuid>,
-}
-
-/// The websites, pixels and links a board shows (upstream's `getBoardEntityIds`),
-/// each list in first-seen order without duplicates.
-fn board_entity_ids(kind: Option<&str>, parameters: &Value) -> [Vec<String>; 3] {
-  let mut ids: [Vec<String>; 3] = Default::default();
-  let mut add = |slot: usize, id: Option<&Value>| {
-    // Upstream checks truthiness, then collects into a `Set`.
-    if let Some(id) = id.and_then(Value::as_str).filter(|id| !id.is_empty())
-      && !ids[slot].iter().any(|seen| seen == id)
-    {
-      ids[slot].push(id.to_owned());
-    }
-  };
-  let slot = |entity_type: &str| {
-    match entity_type {
-      "website" => Some(0),
-      "pixel" => Some(1),
-      "link" => Some(2),
-      _ => None,
-    }
-  };
-
-  // `getBoardType`: a known type, `open` as `mixed`, else inferred from the
-  // parameters (`getLegacyBoardType`).
-  let legacy = if truthy(&parameters["pixelId"]) {
-    "pixel"
-  } else if truthy(&parameters["linkId"]) {
-    "link"
-  } else if truthy(&parameters["websiteId"]) {
-    "website"
-  } else {
-    "mixed"
-  };
-  let board_type = match kind {
-    Some("open") => "mixed",
-    Some(known @ ("dashboard" | "mixed" | "website" | "pixel" | "link")) => known,
-    _ => legacy,
-  };
-  if let Some(slot) = slot(board_type) {
-    add(slot, parameters.get(format!("{board_type}Id")));
-  }
-
-  add(0, parameters.get("websiteId"));
-  add(1, parameters.get("pixelId"));
-  add(2, parameters.get("linkId"));
-
-  let rows = parameters["rows"].as_array().into_iter().flatten();
-  for column in rows.flat_map(|row| row["columns"].as_array().into_iter().flatten()) {
-    let component = &column["component"];
-    // `getComponentEntity`
-    let (entity_type, entity_id) = if truthy(&component["entityType"]) && truthy(&component["entityId"]) {
-      (component["entityType"].as_str(), component.get("entityId"))
-    } else if truthy(&component["websiteId"]) {
-      (Some("website"), component.get("websiteId"))
-    } else {
-      (None, None)
-    };
-    if let Some(slot) = entity_type.and_then(slot) {
-      add(slot, entity_id);
-    }
-  }
-
-  ids
-}
-
-/// JavaScript truthiness.
-fn truthy(value: &Value) -> bool {
-  match value {
-    Value::Null => false,
-    Value::Bool(b) => *b,
-    Value::Number(n) => n.as_f64().is_some_and(|n| n != 0.0 && !n.is_nan()),
-    Value::String(s) => !s.is_empty(),
-    _ => true,
-  }
-}
-
 /// Upstream's `filterBoardEntityIdsForShare`: the board's entities that its
 /// owner may share. A team board shares what the team or its members own; a
 /// user's board what that user can view.
-async fn shared_board_entities(state: &AppState, board: &Owner, ids: [Vec<String>; 3]) -> AppResult<[Vec<String>; 3]> {
-  let tables = ["website", "pixel", "link"];
-  let mut shared: [Vec<String>; 3] = Default::default();
+async fn shared_board_entities(state: &AppState, board: Owner, ids: EntityIds) -> AppResult<EntityIds> {
+  let mut shared = EntityIds::default();
+  let lists = [
+    (EntityType::Website, ids.websites, &mut shared.websites),
+    (EntityType::Pixel, ids.pixels, &mut shared.pixels),
+    (EntityType::Link, ids.links, &mut shared.links),
+  ];
 
   if let Some(team_id) = board.team_id {
-    let members: Vec<Uuid> = sqlx::query_scalar("select user_id from team_user where team_id = $1")
-      .bind(team_id)
-      .fetch_all(&state.db)
-      .await?;
+    let members = team::member_ids(&state.db, team_id).await?;
 
-    for (slot, list) in ids.into_iter().enumerate() {
-      for id in list {
+    for (kind, ids, shared) in lists {
+      for id in ids {
+        // Upstream's lookups fail (and drop the ID) for anything but a UUID.
         let Some(uuid) = zod::uuid(&id) else { continue };
-        let owned_by_team = owned(state, tables[slot], uuid)
-          .await?
-          .is_some_and(|e| e.team_id == Some(team_id) || e.user_id.is_some_and(|u| members.contains(&u)));
+        let owned_by_team = can::owner(&state.db, kind, uuid).await?.is_some_and(|owner| {
+          owner.team_id == Some(team_id) || owner.user_id.is_some_and(|user| members.contains(&user))
+        });
         if owned_by_team {
-          shared[slot].push(id);
+          shared.push(id);
         }
       }
     }
@@ -479,7 +320,7 @@ async fn shared_board_entities(state: &AppState, board: &Owner, ids: [Vec<String
   let Some(user_id) = board.user_id else {
     return Ok(shared);
   };
-  let Some(user) = store::user(&state.db, user_id).await? else {
+  let Some(user) = user::get(&state.db, user_id).await? else {
     return Ok(shared);
   };
   let auth = Auth {
@@ -489,93 +330,19 @@ async fn shared_board_entities(state: &AppState, board: &Owner, ids: [Vec<String
     kind: AuthKind::Session,
   };
 
-  for (slot, list) in ids.into_iter().enumerate() {
-    for id in list {
-      let allowed = if slot == 0 {
-        can::can_view_website(&state.db, &auth, &id).await
-      } else {
-        can_view_owned(state, &auth, tables[slot], &id).await
+  for (kind, ids, shared) in lists {
+    for id in ids {
+      let allowed = match kind {
+        EntityType::Website => can::can_view_website(&state.db, &auth, &id).await,
+        EntityType::Pixel => can::can_view_pixel(&state.db, &auth, &id).await,
+        _ => can::can_view_link(&state.db, &auth, &id).await,
       };
       // Upstream drops IDs whose check fails.
       if allowed.unwrap_or(false) {
-        shared[slot].push(id);
+        shared.push(id);
       }
     }
   }
 
   Ok(shared)
-}
-
-/// Upstream's `canViewLink` and `canViewPixel` for a signed-in user.
-async fn can_view_owned(state: &AppState, auth: &Auth, table: &str, id: &str) -> AppResult<bool> {
-  let Some(user) = &auth.user else {
-    return Ok(false);
-  };
-  if user.is_admin {
-    return Ok(true);
-  }
-  let Some(entity) = owned(state, table, db_id(id)?).await? else {
-    return Ok(false);
-  };
-
-  if let Some(owner) = entity.user_id {
-    return Ok(owner == user.id);
-  }
-  if let Some(team_id) = entity.team_id {
-    return Ok(team::team_user(&state.db, team_id, user.id).await?.is_some());
-  }
-
-  Ok(false)
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn coerces_share_types_like_zod() {
-    assert_eq!(coerce_int(Some(&json!(1))).unwrap(), 1);
-    assert_eq!(coerce_int(Some(&json!("4"))).unwrap(), 4);
-    assert_eq!(coerce_int(Some(&json!(" 2 "))).unwrap(), 2);
-    assert_eq!(coerce_int(Some(&json!(true))).unwrap(), 1);
-    assert_eq!(coerce_int(Some(&json!(null))).unwrap(), 0);
-    assert_eq!(coerce_int(Some(&json!(""))).unwrap(), 0);
-
-    for invalid in [json!(1.5), json!("x"), json!({}), json!(1e10)] {
-      assert!(coerce_int(Some(&invalid)).is_err(), "{invalid}");
-    }
-    assert!(coerce_int(None).is_err());
-  }
-
-  #[test]
-  fn collects_board_entities_like_upstream() {
-    let parameters = json!({
-        "websiteId": "w1",
-        "rows": [
-            { "columns": [
-                { "component": { "entityType": "pixel", "entityId": "p1" } },
-                { "component": { "websiteId": "w2" } },
-                { "component": { "entityType": "link", "entityId": "" , "websiteId": "w1" } },
-                { "component": { "entityType": "other", "entityId": "x" } },
-            ] },
-            { "columns": [{ "component": { "entityType": "link", "entityId": "l1" } }] },
-            { "columns": null },
-        ],
-    });
-
-    assert_eq!(
-      board_entity_ids(Some("mixed"), &parameters),
-      [
-        vec!["w1".to_owned(), "w2".to_owned()],
-        vec!["p1".to_owned()],
-        vec!["l1".to_owned()]
-      ]
-    );
-    // An unknown type falls back to the parameters' entity.
-    assert_eq!(
-      board_entity_ids(Some("x"), &json!({ "linkId": "l1" })),
-      [vec![], vec![], vec!["l1".to_owned()]]
-    );
-    assert_eq!(board_entity_ids(None, &json!(null)), <[Vec<String>; 3]>::default());
-  }
 }

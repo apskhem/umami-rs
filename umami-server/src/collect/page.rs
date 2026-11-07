@@ -2,7 +2,7 @@
 
 use url::Url;
 
-use super::js;
+use crate::js;
 
 /// The URL-derived columns of a `website_event` row.
 #[derive(Debug, Default, PartialEq, Eq)]

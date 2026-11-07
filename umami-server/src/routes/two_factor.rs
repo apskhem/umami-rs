@@ -24,13 +24,15 @@ use serde_json::{
 };
 use uuid::Uuid;
 
-use super::body;
+use super::{
+  body,
+  ok,
+};
 use crate::auth::{
   self,
   Auth,
   PARTIAL_AUTH_TOKEN_TYPE,
   password,
-  store,
   totp,
   two_factor,
 };
@@ -38,10 +40,15 @@ use crate::error::{
   AppError,
   AppResult,
 };
+use crate::queries::{
+  team,
+  user,
+};
 use crate::state::AppState;
 use crate::{
-  json as js,
+  js,
   jwt,
+  queries,
 };
 
 fn key(state: &AppState) -> AppResult<&[u8; 32]> {
@@ -64,10 +71,10 @@ fn six_char_token(object: &serde_json::Map<String, Value>) -> AppResult<&str> {
 /// `GET /api/2fa/status`
 pub async fn status(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Value>> {
   let user = auth.user()?;
-  let enabled = two_factor::get(&state.db, user.id)
+  let enabled = queries::two_factor::get(&state.db, user.id)
     .await?
     .is_some_and(|tf| tf.is_enabled);
-  let global = two_factor::global_required(&state.db).await?;
+  let global = queries::two_factor::global_required(&state.db).await?;
 
   // 2FA cannot be set up without an encryption key, so it is never required.
   if state.config.two_factor_key.is_none() {
@@ -80,7 +87,7 @@ pub async fn status(State(state): State<AppState>, auth: Auth) -> AppResult<Json
     })));
   }
 
-  let reason = two_factor::requirement(&state.db, user.id).await?;
+  let reason = queries::two_factor::requirement(&state.db, user.id).await?;
 
   Ok(Json(json!({
       "isEnabled": enabled,
@@ -96,10 +103,10 @@ pub async fn initiate(State(state): State<AppState>, auth: Auth) -> AppResult<Js
   let user = auth.user()?;
   let key = key(&state)?;
 
-  let Some(user) = store::user(&state.db, user.id).await? else {
+  let Some(user) = user::get(&state.db, user.id).await? else {
     return Err(AppError::BadRequest("User not found".to_owned()));
   };
-  if two_factor::get(&state.db, user.user_id)
+  if queries::two_factor::get(&state.db, user.user_id)
     .await?
     .is_some_and(|tf| tf.is_enabled)
   {
@@ -112,7 +119,7 @@ pub async fn initiate(State(state): State<AppState>, auth: Auth) -> AppResult<Js
 
   let secret = totp::generate_secret();
   let uri = totp::otpauth_uri(&secret, &user.username);
-  two_factor::save_pending(&state.db, user.user_id, &two_factor::encrypt_secret(key, &secret)).await?;
+  queries::two_factor::save_pending(&state.db, user.user_id, &two_factor::encrypt_secret(key, &secret)).await?;
 
   // The plaintext secret is returned once, for manual entry.
   Ok(Json(
@@ -139,7 +146,9 @@ pub async fn confirm(State(state): State<AppState>, auth: AppResult<Auth>, body:
   let user_id = auth?.user()?.id;
   let key = key(&state)?;
 
-  let pending = two_factor::get(&state.db, user_id).await?.filter(|tf| !tf.is_enabled);
+  let pending = queries::two_factor::get(&state.db, user_id)
+    .await?
+    .filter(|tf| !tf.is_enabled);
   let Some(pending) = pending else {
     return Err(AppError::coded(
       StatusCode::BAD_REQUEST,
@@ -152,17 +161,17 @@ pub async fn confirm(State(state): State<AppState>, auth: AppResult<Auth>, body:
   two_factor::verify_code(&state.db, key, user_id, &pending.secret, token).await?;
 
   let (backup_codes, hashes) = two_factor::generate_backup_codes().await;
-  two_factor::enable(&state.db, user_id, &hashes, token).await?;
-  two_factor::reset_rate_limit(&state.db, user_id).await?;
+  queries::two_factor::enable(&state.db, user_id, &hashes, token).await?;
+  queries::two_factor::reset_rate_limit(&state.db, user_id).await?;
 
   Ok(Json(json!({ "backupCodes": backup_codes })))
 }
 
 /// `POST /api/2fa/setup/cancel`
 pub async fn cancel(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Value>> {
-  two_factor::delete_pending(&state.db, auth.user()?.id).await?;
+  queries::two_factor::delete_pending(&state.db, auth.user()?.id).await?;
 
-  Ok(Json(json!({ "ok": true })))
+  Ok(ok())
 }
 
 /// `POST /api/2fa/disable`: needs the password and a current code, and is refused
@@ -175,7 +184,7 @@ pub async fn disable(State(state): State<AppState>, auth: AppResult<Auth>, body:
   let user_id = auth?.user()?.id;
   let key = key(&state)?;
 
-  if two_factor::requirement(&state.db, user_id).await?.is_some() {
+  if queries::two_factor::requirement(&state.db, user_id).await?.is_some() {
     return Err(AppError::coded(
       StatusCode::FORBIDDEN,
       "two-factor-error-disable-not-allowed",
@@ -183,7 +192,7 @@ pub async fn disable(State(state): State<AppState>, auth: AppResult<Auth>, body:
     ));
   }
 
-  let correct = match store::user(&state.db, user_id).await? {
+  let correct = match user::get(&state.db, user_id).await? {
     Some(user) => password::verify(password, &user.password).await,
     None => false,
   };
@@ -195,7 +204,9 @@ pub async fn disable(State(state): State<AppState>, auth: AppResult<Auth>, body:
     ));
   }
 
-  let enabled = two_factor::get(&state.db, user_id).await?.filter(|tf| tf.is_enabled);
+  let enabled = queries::two_factor::get(&state.db, user_id)
+    .await?
+    .filter(|tf| tf.is_enabled);
   let Some(enabled) = enabled else {
     return Err(AppError::coded(
       StatusCode::BAD_REQUEST,
@@ -206,10 +217,10 @@ pub async fn disable(State(state): State<AppState>, auth: AppResult<Auth>, body:
 
   two_factor::check_rate_limit(&state.db, user_id).await?;
   two_factor::verify_code(&state.db, key, user_id, &enabled.secret, token).await?;
-  two_factor::disable(&state.db, user_id, token).await?;
-  two_factor::reset_rate_limit(&state.db, user_id).await?;
+  queries::two_factor::disable(&state.db, user_id, token).await?;
+  queries::two_factor::reset_rate_limit(&state.db, user_id).await?;
 
-  Ok(Json(json!({ "ok": true })))
+  Ok(ok())
 }
 
 /// `POST /api/2fa/verify`: completes a 2FA login with a code or a backup code,
@@ -238,11 +249,13 @@ pub async fn verify(State(state): State<AppState>, headers: HeaderMap, body: Byt
     _ => return Err(AppError::bad_request()),
   };
 
-  let Some(user) = store::user(&state.db, user_id).await? else {
+  let Some(user) = user::get(&state.db, user_id).await? else {
     return Err(AppError::Unauthorized);
   };
 
-  let enabled = two_factor::get(&state.db, user_id).await?.filter(|tf| tf.is_enabled);
+  let enabled = queries::two_factor::get(&state.db, user_id)
+    .await?
+    .filter(|tf| tf.is_enabled);
   let Some(enabled) = enabled else {
     return Err(AppError::coded(
       StatusCode::BAD_REQUEST,
@@ -257,12 +270,12 @@ pub async fn verify(State(state): State<AppState>, headers: HeaderMap, body: Byt
     Credential::BackupCode(code) => two_factor::verify_backup_code(&state.db, user_id, code).await?,
     Credential::Code(code) => {
       two_factor::verify_code(&state.db, key, user_id, &enabled.secret, code).await?;
-      two_factor::mark_used(&mut *state.db.acquire().await?, user_id, code).await?;
+      queries::two_factor::mark_used(&mut *state.db.acquire().await?, user_id, code).await?;
     }
   }
-  two_factor::reset_rate_limit(&state.db, user_id).await?;
+  queries::two_factor::reset_rate_limit(&state.db, user_id).await?;
 
-  let teams = store::user_teams(&state.db, user_id).await?;
+  let teams = team::for_user(&state.db, user_id).await?;
 
   Ok(Json(json!({
       "token": auth::session_token(&user, &state.config.secret),
@@ -307,7 +320,7 @@ async fn policy_body(state: &AppState, auth: AppResult<Auth>, body: &Bytes) -> A
 /// `POST /api/admin/2fa/global`: require 2FA from everyone.
 pub async fn set_global(State(state): State<AppState>, auth: AppResult<Auth>, body: Bytes) -> AppResult<Json<Value>> {
   let required = policy_body(&state, auth, &body).await?;
-  two_factor::set_global_required(&state.db, required).await?;
+  queries::two_factor::set_global_required(&state.db, required).await?;
 
   Ok(Json(json!({ "ok": true, "required": required })))
 }
@@ -320,7 +333,7 @@ pub async fn user_status(
 ) -> AppResult<Json<Value>> {
   require_admin(&auth)?;
   let user_id = user_id.parse().map_err(|_| AppError::NotFound)?;
-  let enabled = two_factor::get(&state.db, user_id)
+  let enabled = queries::two_factor::get(&state.db, user_id)
     .await?
     .is_some_and(|tf| tf.is_enabled);
 
@@ -337,12 +350,7 @@ pub async fn set_user(
   let required = policy_body(&state, auth, &body).await?;
   let user_id: Uuid = user_id.parse().map_err(|_| AppError::NotFound)?;
 
-  let updated = sqlx::query(r#"update "user" set two_factor_required = $2, updated_at = now() where user_id = $1"#)
-    .bind(user_id)
-    .bind(required)
-    .execute(&state.db)
-    .await?;
-  if updated.rows_affected() == 0 {
+  if !queries::two_factor::set_user_required(&state.db, user_id, required).await? {
     return Err(AppError::NotFound);
   }
 
@@ -359,7 +367,7 @@ pub async fn reset_user(
 ) -> AppResult<Json<Value>> {
   require_admin(&auth)?;
   let id: Uuid = user_id.parse().map_err(|_| AppError::NotFound)?;
-  let counts = two_factor::reset(&state.db, id).await?;
+  let counts = queries::two_factor::reset(&state.db, id).await?;
 
   Ok(Json(json!({
       "ok": true,
@@ -383,12 +391,7 @@ pub async fn set_team(
   let required = policy_body(&state, auth, &body).await?;
   let team_id: Uuid = team_id.parse().map_err(|_| AppError::NotFound)?;
 
-  let updated = sqlx::query("update team set two_factor_required = $2, updated_at = now() where team_id = $1")
-    .bind(team_id)
-    .bind(required)
-    .execute(&state.db)
-    .await?;
-  if updated.rows_affected() == 0 {
+  if !queries::two_factor::set_team_required(&state.db, team_id, required).await? {
     return Err(AppError::NotFound);
   }
 

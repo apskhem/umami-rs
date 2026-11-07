@@ -21,16 +21,12 @@ use serde_json::{
   Value,
   json,
 };
+use umami_parity::fixtures::share_token;
 use umami_parity::{
-  APP_SECRET,
   Response,
   Stack,
   assert_same,
   bearer,
-};
-use umami_server::{
-  crypto,
-  jwt,
 };
 use uuid::Uuid;
 
@@ -575,13 +571,7 @@ async fn errors_and_permissions_match_upstream() {
   assert_same(&u, &r, &[], "invalid parameters without a session");
 
   // Share links see the sections they enable.
-  let secret = crypto::hash(&[APP_SECRET]);
-  let share = |parameters: Value| {
-    jwt::sign(
-      &json!({ "type": "share", "websiteId": data.website, "parameters": parameters, "iat": 1 }),
-      &secret,
-    )
-  };
+  let share = |parameters: Value| share_token(json!({ "websiteId": data.website, "parameters": parameters }));
   for (token, path, status) in [
     (share(json!({})), format!("{base}/stats?{range}"), 200),
     (

@@ -4,6 +4,7 @@ use chrono::{
   DateTime,
   Utc,
 };
+use serde::Serialize;
 use serde_json::{
   Map,
   Value,
@@ -19,12 +20,12 @@ use uuid::Uuid;
 use super::{
   Filters,
   delete_where,
-  into_map,
+  model_json,
   now,
   sort_column,
   website,
 };
-use crate::json as js;
+use crate::js;
 
 pub const ROLE_OWNER: &str = "team-owner";
 pub const ROLE_MANAGER: &str = "team-manager";
@@ -33,15 +34,20 @@ pub const ROLE_MEMBER: &str = "team-member";
 /// Upstream's `TEAM_SORT_FIELDS`.
 pub const SORT_FIELDS: &[&str] = &["name", "createdAt"];
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Team {
+  #[serde(rename = "id")]
   pub team_id: Uuid,
   pub name: String,
   pub access_code: Option<String>,
   pub logo_url: Option<String>,
   pub two_factor_required: bool,
+  #[serde(serialize_with = "js::serialize_date")]
   pub created_at: Option<DateTime<Utc>>,
+  #[serde(serialize_with = "js::serialize_date")]
   pub updated_at: Option<DateTime<Utc>>,
+  #[serde(serialize_with = "js::serialize_date")]
   pub deleted_at: Option<DateTime<Utc>>,
 }
 
@@ -51,45 +57,30 @@ const TEAM_COLUMNS: &str = "team_id, name, access_code, logo_url, two_factor_req
 impl Team {
   /// The Prisma model as JSON, fields in schema order.
   pub fn to_json(&self) -> Map<String, Value> {
-    let value = json!({
-        "id": self.team_id,
-        "name": self.name,
-        "accessCode": self.access_code,
-        "logoUrl": self.logo_url,
-        "twoFactorRequired": self.two_factor_required,
-        "createdAt": self.created_at.map(js::date),
-        "updatedAt": self.updated_at.map(js::date),
-        "deletedAt": self.deleted_at.map(js::date),
-    });
-
-    into_map(value)
+    model_json(self)
   }
 }
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TeamUser {
+  #[serde(rename = "id")]
   pub team_user_id: Uuid,
   pub team_id: Uuid,
   pub user_id: Uuid,
   pub role: String,
+  #[serde(serialize_with = "js::serialize_date")]
   pub created_at: Option<DateTime<Utc>>,
+  #[serde(serialize_with = "js::serialize_date")]
   pub updated_at: Option<DateTime<Utc>>,
 }
 
 const TEAM_USER_COLUMNS: &str = "team_user_id, team_id, user_id, role, created_at, updated_at";
 
 impl TeamUser {
+  /// The Prisma model as JSON, fields in schema order.
   pub fn to_json(&self) -> Map<String, Value> {
-    let value = json!({
-        "id": self.team_user_id,
-        "teamId": self.team_id,
-        "userId": self.user_id,
-        "role": self.role,
-        "createdAt": self.created_at.map(js::date),
-        "updatedAt": self.updated_at.map(js::date),
-    });
-
-    into_map(value)
+    model_json(self)
   }
 }
 
@@ -105,6 +96,36 @@ pub async fn team_user(db: &PgPool, team_id: Uuid, user_id: Uuid) -> sqlx::Resul
   .bind(user_id)
   .fetch_optional(db)
   .await
+}
+
+/// A team as upstream's `getAllUserTeams` lists it.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamSummary {
+  #[sqlx(rename = "team_id")]
+  pub id: Uuid,
+  pub name: String,
+  pub logo_url: Option<String>,
+}
+
+/// The non-deleted teams a user belongs to (upstream's `getAllUserTeams`).
+pub async fn for_user(db: &PgPool, user_id: Uuid) -> sqlx::Result<Vec<TeamSummary>> {
+  sqlx::query_as(
+    "select team_id, name, logo_url from team t \
+         where deleted_at is null \
+         and exists (select 1 from team_user tu where tu.team_id = t.team_id and tu.user_id = $1)",
+  )
+  .bind(user_id)
+  .fetch_all(db)
+  .await
+}
+
+/// The IDs of the team's members.
+pub async fn member_ids(db: &PgPool, team_id: Uuid) -> sqlx::Result<Vec<Uuid>> {
+  sqlx::query_scalar("select user_id from team_user where team_id = $1")
+    .bind(team_id)
+    .fetch_all(db)
+    .await
 }
 
 /// Upstream's `getTeam`, deleted or not.

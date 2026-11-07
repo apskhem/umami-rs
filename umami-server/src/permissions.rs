@@ -31,6 +31,11 @@ pub const TEAM_CREATE: &str = "team:create";
 pub const TEAM_UPDATE: &str = "team:update";
 pub const TEAM_DELETE: &str = "team:delete";
 
+/// A 401 unless `allowed`: how routes answer a failed permission check.
+pub fn require(allowed: bool) -> AppResult<()> {
+  if allowed { Ok(()) } else { Err(AppError::Unauthorized) }
+}
+
 /// Upstream's `ROLE_PERMISSIONS`. Admins (`all`) are handled before any lookup.
 fn role_permissions(role: &str) -> &'static [&'static str] {
   match role {
@@ -168,29 +173,84 @@ pub fn can_view_all_teams(auth: &Auth) -> bool {
   is_admin(auth)
 }
 
-// Websites
+// Owned entities: websites, links, pixels and boards
 
-/// Upstream's `ENTITY_TYPE`: what a share link shares.
-pub const ENTITY_WEBSITE: i32 = 1;
-pub const ENTITY_LINK: i32 = 2;
-pub const ENTITY_PIXEL: i32 = 3;
-pub const ENTITY_BOARD: i32 = 4;
+/// Upstream's `ENTITY_TYPE`: what can be owned and shared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntityType {
+  Website = 1,
+  Link = 2,
+  Pixel = 3,
+  Board = 4,
+}
 
-/// A website, link, pixel or board and its owner (upstream's `getEntity`).
-pub struct Entity {
-  /// Its [`ENTITY_WEBSITE`]-style type.
-  pub kind: i32,
+impl EntityType {
+  /// The type stored as a share's `share_type`, if it is one.
+  pub fn from_code(code: i32) -> Option<Self> {
+    Some(match code {
+      1 => Self::Website,
+      2 => Self::Link,
+      3 => Self::Pixel,
+      4 => Self::Board,
+      _ => return None,
+    })
+  }
+
+  /// The value stored as a share's `share_type`.
+  pub fn code(self) -> i32 {
+    self as i32
+  }
+
+  /// The table, whose key column is `{table}_id`.
+  pub fn table(self) -> &'static str {
+    match self {
+      Self::Website => "website",
+      Self::Link => "link",
+      Self::Pixel => "pixel",
+      Self::Board => "board",
+    }
+  }
+}
+
+/// Who owns a website, link, pixel or board: a user, or else a team.
+#[derive(Debug, Clone, Copy)]
+pub struct Owner {
   pub user_id: Option<Uuid>,
   pub team_id: Option<Uuid>,
 }
 
+impl Owner {
+  /// The rule behind upstream's `canView*`, `canUpdate*` and `canDelete*`
+  /// checks: the owning user, or a member of the owning team whose role grants
+  /// `permission` (any member if `None`).
+  async fn permits(self, db: &PgPool, user_id: Uuid, permission: Option<&str>) -> AppResult<bool> {
+    if let Some(owner) = self.user_id {
+      return Ok(owner == user_id);
+    }
+    let Some(team_id) = self.team_id else {
+      return Ok(false);
+    };
+    let member = team::team_user(db, team_id, user_id).await?;
+
+    Ok(member.is_some_and(|member| permission.is_none_or(|p| has_permission(&member.role, p))))
+  }
+}
+
+/// A website, link, pixel or board and its owner (upstream's `getEntity`).
+pub struct Entity {
+  pub kind: EntityType,
+  pub owner: Owner,
+}
+
+/// The website, link, pixel or board with ID `entity_id`, looked up in that
+/// order (upstream's `getEntity`).
 pub async fn entity(db: &PgPool, entity_id: &str) -> AppResult<Option<Entity>> {
   let id = db_id(entity_id)?;
   // `getWebsite` skips IDs zod rejects; the other lookups query them anyway.
   let check_websites = crate::zod::uuid(entity_id).is_some();
 
   // The branches are numbered by `ENTITY_TYPE`, in upstream's lookup order.
-  let owner: Option<(i32, Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
+  let found: Option<(i32, Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
     "select n, user_id, team_id from ( \
            select 1 as n, user_id, team_id from website where $2 and website_id = $1 \
            union all select 2, user_id, team_id from link where link_id = $1 \
@@ -203,8 +263,83 @@ pub async fn entity(db: &PgPool, entity_id: &str) -> AppResult<Option<Entity>> {
   .fetch_optional(db)
   .await?;
 
-  Ok(owner.map(|(kind, user_id, team_id)| Entity { kind, user_id, team_id }))
+  Ok(found.and_then(|(code, user_id, team_id)| {
+    Some(Entity {
+      kind: EntityType::from_code(code)?,
+      owner: Owner { user_id, team_id },
+    })
+  }))
 }
+
+/// The owner of the `kind` with ID `id`, deleted or not (upstream's
+/// `getWebsite`, `getLink`, `getPixel` and `getBoard`).
+pub async fn owner(db: &PgPool, kind: EntityType, id: Uuid) -> sqlx::Result<Option<Owner>> {
+  let table = kind.table();
+  let owner: Option<(Option<Uuid>, Option<Uuid>)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    "select user_id, team_id from {table} where {table}_id = $1"
+  )))
+  .bind(id)
+  .fetch_optional(db)
+  .await?;
+
+  Ok(owner.map(|(user_id, team_id)| Owner { user_id, team_id }))
+}
+
+/// Upstream's `canViewEntity` (no `permission`), `canUpdateEntity`
+/// (`website:update`) and `canDeleteEntity` (`website:delete`). Share links
+/// have no access.
+pub async fn can_access_entity(db: &PgPool, auth: &Auth, entity_id: &str, permission: Option<&str>) -> AppResult<bool> {
+  let Some(user) = &auth.user else {
+    return Ok(false);
+  };
+  if user.is_admin {
+    return Ok(true);
+  }
+
+  match entity(db, entity_id).await? {
+    Some(entity) => entity.owner.permits(db, user.id, permission).await,
+    None => Ok(false),
+  }
+}
+
+/// Upstream's `canViewLink` and `canViewPixel`: admins, share links naming
+/// it, its owner or its team's members.
+async fn can_view_link_or_pixel(db: &PgPool, auth: &Auth, kind: EntityType, id: &str) -> AppResult<bool> {
+  if is_admin(auth) {
+    return Ok(true);
+  }
+  if let Some(token) = &auth.share_token {
+    let (single, listed) = match kind {
+      EntityType::Link => ("linkId", "linkIds"),
+      _ => ("pixelId", "pixelIds"),
+    };
+    let names = |key: &str| token[key].as_str() == Some(id);
+    let lists = token[listed]
+      .as_array()
+      .is_some_and(|ids| ids.iter().any(|listed| listed.as_str() == Some(id)));
+    if names(single) || names("websiteId") || lists {
+      return Ok(true);
+    }
+  }
+
+  let Some(user) = &auth.user else {
+    return Ok(false);
+  };
+  match owner(db, kind, db_id(id)?).await? {
+    Some(owner) => owner.permits(db, user.id, None).await,
+    None => Ok(false),
+  }
+}
+
+pub async fn can_view_link(db: &PgPool, auth: &Auth, link_id: &str) -> AppResult<bool> {
+  can_view_link_or_pixel(db, auth, EntityType::Link, link_id).await
+}
+
+pub async fn can_view_pixel(db: &PgPool, auth: &Auth, pixel_id: &str) -> AppResult<bool> {
+  can_view_link_or_pixel(db, auth, EntityType::Pixel, pixel_id).await
+}
+
+// Websites
 
 /// Whether the share token covers the website (or link or pixel).
 pub fn share_token_includes(auth: &Auth, website_id: &str) -> bool {
@@ -224,6 +359,8 @@ pub fn share_token_includes(auth: &Auth, website_id: &str) -> bool {
   single || listed
 }
 
+/// Upstream's `canViewWebsite`: admins, share links covering it, or by
+/// ownership of whatever entity has the ID.
 pub async fn can_view_website(db: &PgPool, auth: &Auth, website_id: &str) -> AppResult<bool> {
   if is_admin(auth) || share_token_includes(auth, website_id) {
     return Ok(true);
@@ -232,18 +369,10 @@ pub async fn can_view_website(db: &PgPool, auth: &Auth, website_id: &str) -> App
   let Some(user) = &auth.user else {
     return Ok(false);
   };
-  let Some(entity) = entity(db, website_id).await? else {
-    return Ok(false);
-  };
-
-  if let Some(owner) = entity.user_id {
-    return Ok(owner == user.id);
+  match entity(db, website_id).await? {
+    Some(entity) => entity.owner.permits(db, user.id, None).await,
+    None => Ok(false),
   }
-  if let Some(team_id) = entity.team_id {
-    return Ok(team::team_user(db, team_id, user.id).await?.is_some());
-  }
-
-  Ok(false)
 }
 
 /// Upstream's `canViewSharedWebsite`: signed-in users by their own access,
@@ -348,18 +477,11 @@ pub async fn can_change_website(db: &PgPool, auth: &Auth, website_id: &str, perm
   if user.is_admin {
     return Ok(true);
   }
-  let Some(website) = website::get(db, website_id).await? else {
-    return Ok(false);
-  };
 
-  if let Some(owner) = website.user_id {
-    return Ok(owner == user.id);
+  match website::get(db, website_id).await? {
+    Some(website) => website.owner().permits(db, user.id, Some(permission)).await,
+    None => Ok(false),
   }
-  if let Some(team_id) = website.team_id {
-    return team_permits(db, team_id, user.id, permission).await;
-  }
-
-  Ok(false)
 }
 
 /// Upstream's `canTransferWebsiteToUser`: team owners may take a team website
@@ -406,34 +528,6 @@ pub async fn can_transfer_website_to_team(
 
   if website.user_id == Some(user.id) {
     return team_permits(db, team_id, user.id, WEBSITE_TRANSFER_TO_TEAM).await;
-  }
-
-  Ok(false)
-}
-
-// Entities (the targets of share links)
-
-/// Upstream's `canViewEntity` (no `permission`), `canUpdateEntity`
-/// (`website:update`) and `canDeleteEntity` (`website:delete`): admins, the
-/// owner, or team members whose role grants `permission`. Share links have no
-/// access.
-pub async fn can_access_entity(db: &PgPool, auth: &Auth, entity_id: &str, permission: Option<&str>) -> AppResult<bool> {
-  let Some(user) = &auth.user else {
-    return Ok(false);
-  };
-  if user.is_admin {
-    return Ok(true);
-  }
-  let Some(entity) = entity(db, entity_id).await? else {
-    return Ok(false);
-  };
-
-  if let Some(owner) = entity.user_id {
-    return Ok(owner == user.id);
-  }
-  if let Some(team_id) = entity.team_id {
-    let member = team::team_user(db, team_id, user.id).await?;
-    return Ok(member.is_some_and(|member| permission.is_none_or(|p| has_permission(&member.role, p))));
   }
 
   Ok(false)

@@ -1,6 +1,6 @@
-//! Two-factor authentication state: ports of upstream's `src/lib/two-factor`
-//! (secret encryption, backup codes, rate limiting, replay prevention) and the
-//! queries its routes run.
+//! Two-factor authentication: ports of upstream's `src/lib/two-factor` (secret
+//! encryption, backup codes, and checking codes against the lockout and replay
+//! rules). The stored state is in [`crate::queries::two_factor`].
 
 use aes_gcm::aead::{
   Aead,
@@ -11,16 +11,9 @@ use aes_gcm::{
   Nonce,
 };
 use axum::http::StatusCode;
-use chrono::{
-  DateTime,
-  Duration,
-  Utc,
-};
+use chrono::Utc;
 use serde_json::json;
-use sqlx::{
-  PgConnection,
-  PgPool,
-};
+use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::totp;
@@ -28,17 +21,11 @@ use crate::error::{
   AppError,
   AppResult,
 };
-use crate::json as js;
+use crate::js;
+use crate::queries::two_factor;
 
-const MAX_ATTEMPTS: i32 = 5;
-const LOCKOUT: Duration = Duration::minutes(15);
-/// How long a used code stays blocked from reuse.
-const REPLAY_WINDOW: Duration = Duration::seconds(90);
 const BACKUP_CODE_COUNT: usize = 10;
 const BACKUP_CODE_ROUNDS: u32 = 10;
-
-/// The `app_setting` key for requiring 2FA from every user.
-pub const GLOBAL_REQUIRED_KEY: &str = "twoFactorRequiredGlobal";
 
 /// The 503 upstream returns while `TWO_FACTOR_ENCRYPTION_KEY` is unset or invalid.
 pub fn not_configured() -> AppError {
@@ -47,22 +34,6 @@ pub fn not_configured() -> AppError {
     "two-factor-error-not-configured",
     "TWO_FACTOR_ENCRYPTION_KEY is missing or invalid",
   )
-}
-
-/// A Prisma-style `cuid()` id for the 2FA tables, whose ids Prisma generates
-/// client-side (the columns have no default).
-fn cuid() -> String {
-  const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-  let mut bytes = [0u8; 24];
-  getrandom::fill(&mut bytes).expect("system randomness");
-
-  std::iter::once('c')
-    .chain(
-      bytes
-        .iter()
-        .map(|b| char::from(ALPHABET[usize::from(*b) % ALPHABET.len()])),
-    )
-    .collect()
 }
 
 /// Upstream's `encryptSecret`: AES-256-GCM, stored as `ciphertext:iv:tag` in hex.
@@ -131,152 +102,9 @@ pub async fn match_backup_code(code: &str, hashes: Vec<String>) -> Option<usize>
   .flatten()
 }
 
-#[derive(Debug, sqlx::FromRow)]
-pub struct TwoFactorAuth {
-  pub secret: String,
-  pub is_enabled: bool,
-}
-
-pub async fn get(db: &PgPool, user_id: Uuid) -> sqlx::Result<Option<TwoFactorAuth>> {
-  sqlx::query_as("select secret, is_enabled from two_factor_auth where user_id = $1")
-    .bind(user_id)
-    .fetch_optional(db)
-    .await
-}
-
-/// Stores a new, not yet enabled secret for the user.
-pub async fn save_pending(db: &PgPool, user_id: Uuid, encrypted_secret: &str) -> sqlx::Result<()> {
-  sqlx::query(
-    "insert into two_factor_auth (id, user_id, secret, is_enabled, updated_at) \
-         values ($1, $2, $3, false, now()) \
-         on conflict (user_id) do update set secret = excluded.secret, is_enabled = false, updated_at = now()",
-  )
-  .bind(cuid())
-  .bind(user_id)
-  .bind(encrypted_secret)
-  .execute(db)
-  .await?;
-
-  Ok(())
-}
-
-/// Abandons a setup that was never confirmed.
-pub async fn delete_pending(db: &PgPool, user_id: Uuid) -> sqlx::Result<()> {
-  sqlx::query("delete from two_factor_auth where user_id = $1 and not is_enabled")
-    .bind(user_id)
-    .execute(db)
-    .await?;
-
-  Ok(())
-}
-
-/// Confirms setup: enables 2FA, replaces the backup codes and burns the code used.
-pub async fn enable(db: &PgPool, user_id: Uuid, backup_hashes: &[String], otp: &str) -> sqlx::Result<()> {
-  let mut tx = db.begin().await?;
-
-  sqlx::query("update two_factor_auth set is_enabled = true, updated_at = now() where user_id = $1")
-    .bind(user_id)
-    .execute(&mut *tx)
-    .await?;
-  sqlx::query("delete from two_factor_backup_code where user_id = $1")
-    .bind(user_id)
-    .execute(&mut *tx)
-    .await?;
-  for hash in backup_hashes {
-    sqlx::query(
-      "insert into two_factor_backup_code (id, user_id, code_hash, used, created_at) \
-             values ($1, $2, $3, false, now())",
-    )
-    .bind(cuid())
-    .bind(user_id)
-    .bind(hash)
-    .execute(&mut *tx)
-    .await?;
-  }
-  mark_used(&mut tx, user_id, otp).await?;
-
-  tx.commit().await
-}
-
-/// Turns 2FA off, burning the code used.
-pub async fn disable(db: &PgPool, user_id: Uuid, otp: &str) -> sqlx::Result<()> {
-  let mut tx = db.begin().await?;
-
-  mark_used(&mut tx, user_id, otp).await?;
-  sqlx::query("delete from two_factor_auth where user_id = $1")
-    .bind(user_id)
-    .execute(&mut *tx)
-    .await?;
-  sqlx::query("delete from two_factor_backup_code where user_id = $1")
-    .bind(user_id)
-    .execute(&mut *tx)
-    .await?;
-
-  tx.commit().await
-}
-
-/// Counts of the 2FA rows an admin reset removed.
-pub struct ResetCounts {
-  pub two_factor_auth: u64,
-  pub backup_codes: u64,
-  pub otp_used: u64,
-  pub rate_limit: u64,
-}
-
-/// Removes all of a user's 2FA state (an admin reset).
-pub async fn reset(db: &PgPool, user_id: Uuid) -> sqlx::Result<ResetCounts> {
-  let mut tx = db.begin().await?;
-  let mut delete = async |table: &'static str| {
-    sqlx::query(sqlx::AssertSqlSafe(format!("delete from {table} where user_id = $1")))
-      .bind(user_id)
-      .execute(&mut *tx)
-      .await
-      .map(|result| result.rows_affected())
-  };
-
-  let counts = ResetCounts {
-    two_factor_auth: delete("two_factor_auth").await?,
-    backup_codes: delete("two_factor_backup_code").await?,
-    otp_used: delete("two_factor_otp_used").await?,
-    rate_limit: delete("two_factor_rate_limit").await?,
-  };
-
-  tx.commit().await?;
-  Ok(counts)
-}
-
-#[derive(Debug, sqlx::FromRow)]
-pub struct BackupCode {
-  pub id: String,
-  pub code_hash: String,
-}
-
-pub async fn unused_backup_codes(db: &PgPool, user_id: Uuid) -> sqlx::Result<Vec<BackupCode>> {
-  sqlx::query_as("select id, code_hash from two_factor_backup_code where user_id = $1 and not used")
-    .bind(user_id)
-    .fetch_all(db)
-    .await
-}
-
-/// Marks a backup code used; `false` if it was used concurrently.
-pub async fn consume_backup_code(db: &PgPool, id: &str) -> sqlx::Result<bool> {
-  let result = sqlx::query("update two_factor_backup_code set used = true where id = $1 and not used")
-    .bind(id)
-    .execute(db)
-    .await?;
-
-  Ok(result.rows_affected() > 0)
-}
-
 /// Upstream's `checkRateLimit`: an error while the user is locked out.
 pub async fn check_rate_limit(db: &PgPool, user_id: Uuid) -> AppResult<()> {
-  let locked_until: Option<Option<DateTime<Utc>>> =
-    sqlx::query_scalar("select locked_until from two_factor_rate_limit where user_id = $1")
-      .bind(user_id)
-      .fetch_optional(db)
-      .await?;
-
-  match locked_until.flatten() {
+  match two_factor::locked_until(db, user_id).await? {
     Some(until) if until > Utc::now() => {
       Err(AppError::Custom {
         status: StatusCode::TOO_MANY_REQUESTS,
@@ -293,84 +121,9 @@ pub async fn check_rate_limit(db: &PgPool, user_id: Uuid) -> AppResult<()> {
   }
 }
 
-/// Upstream's `recordFailedAttempt`: counts a failure, locking the user out at
-/// five. Returns the lockout end if this failure triggered one.
-pub async fn record_failure(db: &PgPool, user_id: Uuid) -> sqlx::Result<Option<DateTime<Utc>>> {
-  let attempts: i32 = sqlx::query_scalar(
-    "insert into two_factor_rate_limit (id, user_id, attempts, updated_at) values ($1, $2, 1, now()) \
-         on conflict (user_id) do update set attempts = two_factor_rate_limit.attempts + 1, updated_at = now() \
-         returning attempts",
-  )
-  .bind(cuid())
-  .bind(user_id)
-  .fetch_one(db)
-  .await?;
-
-  if attempts < MAX_ATTEMPTS {
-    return Ok(None);
-  }
-
-  let locked_until = Utc::now() + LOCKOUT;
-  sqlx::query("update two_factor_rate_limit set locked_until = $2, updated_at = now() where user_id = $1")
-    .bind(user_id)
-    .bind(locked_until)
-    .execute(db)
-    .await?;
-
-  Ok(Some(locked_until))
-}
-
-pub async fn reset_rate_limit(db: &PgPool, user_id: Uuid) -> sqlx::Result<()> {
-  sqlx::query("delete from two_factor_rate_limit where user_id = $1")
-    .bind(user_id)
-    .execute(db)
-    .await?;
-
-  Ok(())
-}
-
-/// Upstream's `isOtpReplayed`; expired records are cleaned up on the way.
-async fn is_replayed(db: &PgPool, user_id: Uuid, otp: &str) -> sqlx::Result<bool> {
-  let expires_at: Option<DateTime<Utc>> =
-    sqlx::query_scalar("select expires_at from two_factor_otp_used where user_id = $1 and otp = $2")
-      .bind(user_id)
-      .bind(otp)
-      .fetch_optional(db)
-      .await?;
-
-  match expires_at {
-    Some(expires_at) if expires_at < Utc::now() => {
-      sqlx::query("delete from two_factor_otp_used where user_id = $1 and otp = $2")
-        .bind(user_id)
-        .bind(otp)
-        .execute(db)
-        .await?;
-      Ok(false)
-    }
-    Some(_) => Ok(true),
-    None => Ok(false),
-  }
-}
-
-/// Upstream's `markOtpUsed`.
-pub async fn mark_used(db: &mut PgConnection, user_id: Uuid, otp: &str) -> sqlx::Result<()> {
-  sqlx::query(
-    "insert into two_factor_otp_used (id, user_id, otp, expires_at) values ($1, $2, $3, $4) \
-         on conflict (user_id, otp) do update set expires_at = excluded.expires_at",
-  )
-  .bind(cuid())
-  .bind(user_id)
-  .bind(otp)
-  .bind(Utc::now() + REPLAY_WINDOW)
-  .execute(db)
-  .await?;
-
-  Ok(())
-}
-
 /// A 400 for a wrong code, with the lockout end if this failure caused one.
 async fn invalid(db: &PgPool, user_id: Uuid, code: &'static str, message: &str) -> AppError {
-  let locked_until = match record_failure(db, user_id).await {
+  let locked_until = match two_factor::record_failure(db, user_id).await {
     Ok(locked_until) => locked_until,
     Err(error) => return error.into(),
   };
@@ -396,7 +149,7 @@ pub async fn verify_code(
   encrypted_secret: &str,
   token: &str,
 ) -> AppResult<()> {
-  if is_replayed(db, user_id, token).await? {
+  if two_factor::is_replayed(db, user_id, token).await? {
     return Err(AppError::coded(
       StatusCode::BAD_REQUEST,
       "two-factor-error-code-used",
@@ -426,10 +179,10 @@ pub async fn verify_code(
 /// Checks a backup code and consumes it (counting a wrong code towards the
 /// lockout), as upstream's `/api/2fa/verify`.
 pub async fn verify_backup_code(db: &PgPool, user_id: Uuid, code: &str) -> AppResult<()> {
-  let codes = unused_backup_codes(db, user_id).await?;
+  let codes = two_factor::unused_backup_codes(db, user_id).await?;
   let hashes = codes.iter().map(|c| c.code_hash.clone()).collect();
   let consumed = match match_backup_code(code, hashes).await {
-    Some(index) => consume_backup_code(db, &codes[index].id).await?,
+    Some(index) => two_factor::consume_backup_code(db, &codes[index].id).await?,
     None => false,
   };
 
@@ -446,54 +199,6 @@ pub async fn verify_backup_code(db: &PgPool, user_id: Uuid, code: &str) -> AppRe
       .await,
     )
   }
-}
-
-/// Why 2FA is required for a user, if it is (upstream's precedence: global, then
-/// the user, then any of their teams).
-pub async fn requirement(db: &PgPool, user_id: Uuid) -> sqlx::Result<Option<&'static str>> {
-  if global_required(db).await? {
-    return Ok(Some("global"));
-  }
-
-  let (user, team): (bool, bool) = sqlx::query_as(
-    r#"select
-             coalesce((select two_factor_required from "user" where user_id = $1), false),
-             exists(select 1 from team t join team_user tu on tu.team_id = t.team_id
-                    where tu.user_id = $1 and t.two_factor_required)"#,
-  )
-  .bind(user_id)
-  .fetch_one(db)
-  .await?;
-
-  Ok(if user {
-    Some("user")
-  } else if team {
-    Some("team")
-  } else {
-    None
-  })
-}
-
-pub async fn global_required(db: &PgPool) -> sqlx::Result<bool> {
-  let value: Option<String> = sqlx::query_scalar("select value from app_setting where key = $1")
-    .bind(GLOBAL_REQUIRED_KEY)
-    .fetch_optional(db)
-    .await?;
-
-  Ok(value.as_deref() == Some("true"))
-}
-
-pub async fn set_global_required(db: &PgPool, required: bool) -> sqlx::Result<()> {
-  sqlx::query(
-    "insert into app_setting (key, value) values ($1, $2) \
-         on conflict (key) do update set value = excluded.value",
-  )
-  .bind(GLOBAL_REQUIRED_KEY)
-  .bind(required.to_string())
-  .execute(db)
-  .await?;
-
-  Ok(())
 }
 
 #[cfg(test)]
@@ -529,12 +234,5 @@ mod tests {
       Some(3)
     );
     assert_eq!(match_backup_code("nope", hashed).await, None);
-  }
-
-  #[test]
-  fn cuids_look_like_prisma_ids() {
-    let id = cuid();
-    assert_eq!(id.len(), 25);
-    assert!(id.starts_with('c'));
   }
 }

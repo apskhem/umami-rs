@@ -8,7 +8,6 @@
 //! - a share token (`x-umami-share-token`), only together with `x-umami-share-context`.
 
 pub mod password;
-pub mod store;
 pub mod totp;
 pub mod two_factor;
 
@@ -34,10 +33,14 @@ use crate::error::{
   AppError,
   AppResult,
 };
+use crate::queries::{
+  api_key,
+  user,
+};
 use crate::state::AppState;
 use crate::{
   crypto,
-  json as js,
+  js,
   jwt,
 };
 
@@ -74,7 +77,7 @@ pub struct AuthUser {
 }
 
 impl AuthUser {
-  pub fn new(user: store::User) -> Self {
+  pub fn new(user: user::User) -> Self {
     Self {
       is_admin: user.role == "admin",
       id: user.user_id,
@@ -184,7 +187,7 @@ pub async fn authenticate(state: &AppState, headers: &HeaderMap, path: &str) -> 
 
   if let Some(claims) = claims
     && let Some(user_id) = claims.user_id.as_deref().and_then(|id| id.parse().ok())
-    && let Some(found) = store::user(&state.db, user_id).await?
+    && let Some(found) = user::get(&state.db, user_id).await?
   {
     // Tokens are bound to the password hash they were issued for; legacy tokens
     // without a fingerprint stay valid.
@@ -218,10 +221,10 @@ async fn api_key_auth(state: &AppState, key: &str, path: &str) -> AppResult<Opti
     return Ok(None);
   }
 
-  let Some(api_key) = store::api_key_by_hash(&state.db, &crypto::hash(&[key])).await? else {
+  let Some(api_key) = api_key::by_hash(&state.db, &crypto::hash(&[key])).await? else {
     return Ok(None);
   };
-  let Some(user) = store::user(&state.db, api_key.user_id).await? else {
+  let Some(user) = user::get(&state.db, api_key.user_id).await? else {
     return Ok(None);
   };
 
@@ -231,7 +234,7 @@ async fn api_key_auth(state: &AppState, key: &str, path: &str) -> AppResult<Opti
   if stale {
     let db = state.db.clone();
     tokio::spawn(async move {
-      if let Err(error) = store::touch_api_key(&db, api_key.api_key_id).await {
+      if let Err(error) = api_key::touch(&db, api_key.api_key_id).await {
         tracing::warn!(%error, "failed to update API key last use");
       }
     });
@@ -256,7 +259,7 @@ fn share_token(headers: &HeaderMap, secret: &str) -> Option<Value> {
 }
 
 /// A session token for `user`, as upstream's login issues it (without Redis).
-pub fn session_token(user: &store::User, secret: &str) -> String {
+pub fn session_token(user: &user::User, secret: &str) -> String {
   jwt::sign_secure(
     &json!({
         "userId": user.user_id,
@@ -270,7 +273,7 @@ pub fn session_token(user: &store::User, secret: &str) -> String {
 }
 
 /// A session token for `user` that expires after `seconds`.
-pub fn expiring_session_token(user: &store::User, secret: &str, seconds: i64) -> String {
+pub fn expiring_session_token(user: &user::User, secret: &str, seconds: i64) -> String {
   let now = Utc::now().timestamp();
 
   jwt::sign_secure(
@@ -286,7 +289,7 @@ pub fn expiring_session_token(user: &store::User, secret: &str, seconds: i64) ->
 }
 
 /// The short-lived token for completing a 2FA login.
-pub fn partial_token(user: &store::User, secret: &str) -> String {
+pub fn partial_token(user: &user::User, secret: &str) -> String {
   let now = Utc::now().timestamp();
 
   jwt::sign_secure(

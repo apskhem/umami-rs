@@ -23,6 +23,7 @@ use super::sql::{
   timestamp_diff_sql,
 };
 use crate::error::AppResult;
+use crate::js;
 
 /// Upstream's `EVENT_TYPE.customEvent`.
 const CUSTOM_EVENT: i64 = 2;
@@ -927,7 +928,7 @@ pub async fn values(db: &PgPool, website_id: Uuid, column: &str, filters: &Query
   let mut search_query = String::new();
   if let Some(search) = &filters.search {
     bindings.set("search", Param::Text(format!("%{search}%")));
-    let decoded = crate::collect::js::safe_decode_uri_component(search);
+    let decoded = js::safe_decode_uri_component(search);
     if decoded.contains(',') {
       let clauses: Vec<String> = decoded
         .split(',')

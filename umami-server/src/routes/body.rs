@@ -7,9 +7,11 @@ use serde_json::{
 };
 use uuid::Uuid;
 
-use crate::collect::js;
 use crate::error::AppError;
-use crate::zod;
+use crate::{
+  js,
+  zod,
+};
 
 /// The JSON body, whatever the content type (as upstream's `request.json()`);
 /// malformed bodies are `null`, which no schema accepts.
@@ -47,6 +49,33 @@ pub fn nullable_string<'a>(object: &'a Map<String, Value>, key: &str) -> Result<
     None => Ok(None),
     Some(Value::Null) => Ok(Some(None)),
     Some(Value::String(s)) => Ok(Some(Some(s))),
+    Some(_) => Err(AppError::bad_request()),
+  }
+}
+
+/// An optional object field: `anyObjectParam` (`z.record(z.string(), z.any())`),
+/// or `z.object(...)` before its fields are checked.
+pub fn optional_object<'a>(
+  object: &'a Map<String, Value>,
+  key: &str,
+) -> Result<Option<&'a Map<String, Value>>, AppError> {
+  match object.get(key) {
+    None => Ok(None),
+    Some(Value::Object(value)) => Ok(Some(value)),
+    Some(_) => Err(AppError::bad_request()),
+  }
+}
+
+/// A required object field (see [`optional_object`]).
+pub fn object_field<'a>(object: &'a Map<String, Value>, key: &str) -> Result<&'a Map<String, Value>, AppError> {
+  optional_object(object, key)?.ok_or_else(AppError::bad_request)
+}
+
+/// An optional array field (`z.array(...).optional()`).
+pub fn optional_array<'a>(object: &'a Map<String, Value>, key: &str) -> Result<Option<&'a Vec<Value>>, AppError> {
+  match object.get(key) {
+    None => Ok(None),
+    Some(Value::Array(items)) => Ok(Some(items)),
     Some(_) => Err(AppError::bad_request()),
   }
 }

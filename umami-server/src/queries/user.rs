@@ -4,6 +4,7 @@ use chrono::{
   DateTime,
   Utc,
 };
+use serde::Serialize;
 use serde_json::{
   Value,
   json,
@@ -23,25 +24,58 @@ use super::{
   Filters,
   delete_where,
   into_map,
+  model_json,
   now,
   sort_column,
   website,
 };
-use crate::auth::store;
-use crate::json as js;
+use crate::js;
 
 /// Upstream's `USER_SORT_FIELDS`.
 pub const SORT_FIELDS: &[&str] = &["username", "role", "createdAt"];
 
-/// A user as upstream's `getUser` selects it.
-pub fn to_json(user: &store::User) -> Value {
-  json!({
-      "id": user.user_id,
-      "username": user.username,
-      "role": user.role,
-      "createdAt": user.created_at.map(js::date),
-      "twoFactorRequired": user.two_factor_required,
-  })
+/// A non-deleted user, with the columns upstream's `getUser` selects.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct User {
+  #[serde(rename = "id")]
+  pub user_id: Uuid,
+  pub username: String,
+  #[serde(skip)]
+  pub password: String,
+  pub role: String,
+  #[serde(serialize_with = "js::serialize_date")]
+  pub created_at: Option<DateTime<Utc>>,
+  pub two_factor_required: bool,
+}
+
+impl User {
+  /// The user as upstream's `getUser` returns it (without the password).
+  pub fn to_json(&self) -> Value {
+    Value::Object(model_json(self))
+  }
+}
+
+const USER_COLUMNS: &str = r#"select user_id, username, password, role, created_at, two_factor_required from "user""#;
+
+/// Upstream's `getUser`: a user that is not deleted.
+pub async fn get(db: &PgPool, user_id: Uuid) -> sqlx::Result<Option<User>> {
+  sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    "{USER_COLUMNS} where user_id = $1 and deleted_at is null"
+  )))
+  .bind(user_id)
+  .fetch_optional(db)
+  .await
+}
+
+/// Upstream's `getUserByUsername`: usernames are stored lowercased.
+pub async fn by_username(db: &PgPool, username: &str) -> sqlx::Result<Option<User>> {
+  sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    "{USER_COLUMNS} where username = $1 and deleted_at is null"
+  )))
+  .bind(username.to_lowercase())
+  .fetch_optional(db)
+  .await
 }
 
 /// The user holding a username, including deleted users.

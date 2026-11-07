@@ -15,7 +15,7 @@ use serde_json::{
   Value,
 };
 
-use super::js;
+use crate::js;
 
 /// Upstream's `DATA_TYPE`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

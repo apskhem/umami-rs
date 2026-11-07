@@ -19,7 +19,10 @@ use crate::error::{
   AppResult,
 };
 use crate::routes::params::Params;
-use crate::zod;
+use crate::{
+  js,
+  zod,
+};
 
 /// Upstream's `EVENT_COLUMNS`: dimensions of events.
 pub const EVENT_COLUMNS: &[&str] = &[
@@ -283,7 +286,7 @@ impl PropertyFilter {
     }
 
     Some(Self {
-      name: crate::collect::js::safe_decode_uri_component(name).into_owned(),
+      name: js::safe_decode_uri_component(name).into_owned(),
       data_type,
       operator: Operator::parse(operator)?,
       value: value.to_owned(),
@@ -395,6 +398,17 @@ impl QueryFilters {
   }
 }
 
+/// Validates upstream's `filterParams` beyond the plain strings: `segment` and
+/// `cohort` are UUIDs, `eventType` a positive integer, `match` `all` or `any`.
+pub fn check_filter_params(params: &Params) -> AppResult<()> {
+  let valid = params.get("segment").is_none_or(|v| zod::uuid(v).is_some())
+    && params.get("cohort").is_none_or(|v| zod::uuid(v).is_some())
+    && params.get("eventType").is_none_or(|v| zod::positive_int(v).is_some())
+    && params.get("match").is_none_or(|v| matches!(v, "all" | "any"));
+
+  if valid { Ok(()) } else { Err(AppError::bad_request()) }
+}
+
 /// Which optional parameter groups a route's schema has.
 #[derive(Clone, Copy, Default)]
 pub struct Options {
@@ -449,7 +463,7 @@ pub async fn from_request(db: &PgPool, params: &Params, options: Options) -> App
     params.get(key).map(|v| date::parse_date(v).ok_or_else(bad)).transpose()
   };
   let integer = |key: &str| -> AppResult<DateTime<Utc>> {
-    let number = crate::collect::js::string_to_number(params.get(key).ok_or_else(bad)?);
+    let number = js::string_to_number(params.get(key).ok_or_else(bad)?);
     if number.fract() != 0.0 {
       return Err(bad());
     }
@@ -518,6 +532,7 @@ pub async fn from_request(db: &PgPool, params: &Params, options: Options) -> App
   if !options.filters {
     return Ok(filters);
   }
+  check_filter_params(params)?;
 
   for (key, value) in params.iter() {
     let name = base_name(key);
@@ -527,7 +542,6 @@ pub async fn from_request(db: &PgPool, params: &Params, options: Options) -> App
     let value = if name == "eventType" {
       match zod::positive_int(value) {
         Some(n) => FilterValue::Number(n),
-        None if key == name => return Err(bad()),
         // Suffixed copies bypass upstream's schema and are kept as text.
         None => FilterValue::Text(value.to_owned()),
       }
@@ -537,11 +551,7 @@ pub async fn from_request(db: &PgPool, params: &Params, options: Options) -> App
     filters.set(key, value);
   }
 
-  filters.match_any = match params.get("match") {
-    None | Some("all") => false,
-    Some("any") => true,
-    Some(_) => return Err(bad()),
-  };
+  filters.match_any = params.get("match") == Some("any");
 
   for (key, value) in params.iter() {
     let is_numbered = |prefix: &str| {
@@ -556,14 +566,8 @@ pub async fn from_request(db: &PgPool, params: &Params, options: Options) -> App
     }
   }
 
-  let uuid = |key: &str| {
-    params
-      .get(key)
-      .map(|value| zod::uuid(value).ok_or_else(bad))
-      .transpose()
-  };
-  filters.segment = uuid("segment")?;
-  filters.cohort_id = uuid("cohort")?;
+  filters.segment = params.get("segment").and_then(zod::uuid);
+  filters.cohort_id = params.get("cohort").and_then(zod::uuid);
 
   // Upstream treats any value as true, including `false`.
   filters.exclude_bounce = params

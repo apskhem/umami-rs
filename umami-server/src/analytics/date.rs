@@ -217,7 +217,7 @@ pub fn parse_date_range(value: &str, now: DateTime<Utc>) -> Option<(DateTime<Utc
 /// A JavaScript timestamp (`new Date(+value)`); `None` for values JS cannot
 /// represent.
 pub fn millis(value: &str) -> Option<DateTime<Utc>> {
-  let number = crate::collect::js::string_to_number(value);
+  let number = crate::js::string_to_number(value);
   from_js_millis(number)
 }
 
@@ -273,6 +273,21 @@ pub async fn time_zone(db: &PgPool, value: &str) -> sqlx::Result<Option<String>>
       .contains(&normalized.to_lowercase())
       .then(|| normalized.to_owned()),
   )
+}
+
+/// date-fns `startOfMonth`, in UTC.
+pub fn month_start(at: DateTime<Utc>) -> DateTime<Utc> {
+  Utc
+    .with_ymd_and_hms(at.year(), at.month(), 1, 0, 0, 0)
+    .single()
+    .unwrap_or(at)
+}
+
+/// date-fns `endOfMonth`, in UTC: the month's last millisecond.
+pub fn month_end(at: DateTime<Utc>) -> DateTime<Utc> {
+  month_start(at)
+    .checked_add_months(Months::new(1))
+    .map_or(at, |next| next - Duration::milliseconds(1))
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ pub mod config;
 pub mod crypto;
 pub mod error;
 pub mod healthcheck;
-pub mod json;
+pub mod js;
 pub mod jwt;
 pub mod permissions;
 pub mod queries;

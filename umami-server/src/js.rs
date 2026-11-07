@@ -1,7 +1,28 @@
-//! JavaScript semantics that upstream's ingestion code depends on, so values are
-//! stored exactly as upstream stores them.
+//! JavaScript semantics that upstream depends on (string lengths, number
+//! formatting and coercion, `Date#toJSON`), so values are stored and returned
+//! exactly as upstream stores and returns them.
 
 use std::borrow::Cow;
+
+use chrono::{
+  DateTime,
+  SecondsFormat,
+  Utc,
+};
+use serde::Serializer;
+
+/// A timestamp as JavaScript's `Date#toJSON`: `2026-11-06T12:25:01.546Z`.
+pub fn date(value: DateTime<Utc>) -> String {
+  value.to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+/// Serde adapter for optional timestamps in [`date`] form.
+pub fn serialize_date<S: Serializer>(value: &Option<DateTime<Utc>>, serializer: S) -> Result<S::Ok, S::Error> {
+  match value {
+    Some(value) => serializer.serialize_str(&date(*value)),
+    None => serializer.serialize_none(),
+  }
+}
 
 /// `str.substring(0, max)`: truncates to `max` UTF-16 code units. A surrogate pair
 /// split by the cut is dropped entirely, since Rust strings can't hold half of one.
@@ -202,9 +223,41 @@ fn decode(s: &str, reserved: &str) -> Option<String> {
   String::from_utf8(out).ok()
 }
 
+/// JavaScript truthiness of a JSON value.
+pub fn truthy(value: &serde_json::Value) -> bool {
+  use serde_json::Value;
+
+  match value {
+    Value::Null => false,
+    Value::Bool(b) => *b,
+    Value::Number(n) => n.as_f64().is_some_and(|n| n != 0.0),
+    Value::String(s) => !s.is_empty(),
+    Value::Array(_) | Value::Object(_) => true,
+  }
+}
+
+/// A number as `JSON.stringify` writes it: integers without a fraction (`1`,
+/// not `1.0`).
+pub fn number(x: f64) -> serde_json::Value {
+  if x.fract() == 0.0 && x.abs() <= 9_007_199_254_740_991.0 {
+    serde_json::Value::from(x as i64)
+  } else {
+    serde_json::Value::from(x)
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn formats_dates_like_javascript() {
+    let at: DateTime<Utc> = "2026-11-06T12:25:01.546789Z".parse().unwrap();
+    assert_eq!(date(at), "2026-11-06T12:25:01.546Z");
+
+    let whole: DateTime<Utc> = "2026-11-06T12:25:01Z".parse().unwrap();
+    assert_eq!(date(whole), "2026-11-06T12:25:01.000Z");
+  }
 
   // Expected values computed with Node.js.
 

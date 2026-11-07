@@ -13,14 +13,20 @@ use crate::auth::{
   self,
   Auth,
   password,
-  store,
 };
 use crate::error::{
   AppError,
   AppResult,
 };
-use crate::json as js;
+use crate::queries::{
+  team,
+  user,
+};
 use crate::state::AppState;
+use crate::{
+  js,
+  queries,
+};
 
 /// Upstream's seeded password hash, checked against when a username is unknown so
 /// that unknown and known usernames take the same time to reject.
@@ -35,7 +41,7 @@ pub async fn login(State(state): State<AppState>, body: Bytes) -> AppResult<Json
 
   let incorrect = || AppError::unauthorized_code("incorrect-username-password");
 
-  let Some(user) = store::user_by_username(&state.db, username).await? else {
+  let Some(user) = user::by_username(&state.db, username).await? else {
     password::verify(password, DUMMY_HASH).await;
     return Err(incorrect());
   };
@@ -45,7 +51,7 @@ pub async fn login(State(state): State<AppState>, body: Bytes) -> AppResult<Json
 
   let secret = &state.config.secret;
 
-  if store::two_factor_enabled(&state.db, user.user_id).await? {
+  if queries::two_factor::enabled(&state.db, user.user_id).await? {
     if state.config.two_factor_key.is_none() {
       return Err(two_factor_not_configured());
     }
@@ -57,7 +63,7 @@ pub async fn login(State(state): State<AppState>, body: Bytes) -> AppResult<Json
   }
 
   let token = auth::session_token(&user, secret);
-  let teams = store::user_teams(&state.db, user.user_id).await?;
+  let teams = team::for_user(&state.db, user.user_id).await?;
 
   // Upstream echoes the username as submitted (`ADMIN`), not as stored.
   Ok(Json(json!({
@@ -76,7 +82,7 @@ pub async fn login(State(state): State<AppState>, body: Bytes) -> AppResult<Json
 /// `POST /api/auth/verify`: the current user and their teams.
 pub async fn verify(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Value>> {
   let user = auth.user()?;
-  let teams = store::user_teams(&state.db, user.id).await?;
+  let teams = team::for_user(&state.db, user.id).await?;
 
   let mut body = json!(user);
   body["teams"] = json!(teams);
@@ -98,7 +104,7 @@ const SSO_TOKEN_SECONDS: i64 = 24 * 60 * 60;
 /// token carries its own expiry, so no store is needed.
 pub async fn sso(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Value>> {
   let user = auth.user()?;
-  let stored = store::user(&state.db, user.id).await?.ok_or(AppError::Unauthorized)?;
+  let stored = user::get(&state.db, user.id).await?.ok_or(AppError::Unauthorized)?;
   let token = auth::expiring_session_token(&stored, &state.config.secret, SSO_TOKEN_SECONDS);
 
   Ok(Json(json!({ "user": user, "token": token })))

@@ -15,10 +15,12 @@ use serde_json::{
   json,
 };
 
-use super::body;
 use super::params::Params;
+use super::{
+  body,
+  ok,
+};
 use crate::auth::Auth;
-use crate::crypto;
 use crate::error::{
   AppError,
   AppResult,
@@ -88,7 +90,7 @@ fn parameters(value: Option<&Value>) -> AppResult<Map<String, Value>> {
   let object = value.and_then(Value::as_object).ok_or_else(AppError::bad_request)?;
   let mut parsed = Map::new();
 
-  if let Some(filters) = optional_array(object, "filters")? {
+  if let Some(filters) = body::optional_array(object, "filters")? {
     let filters = filters
       .iter()
       .map(|filter| {
@@ -103,7 +105,7 @@ fn parameters(value: Option<&Value>) -> AppResult<Map<String, Value>> {
     parsed.insert("filters".to_owned(), json!(filters));
   }
 
-  if let Some(filters) = optional_array(object, "sessionPropertyFilters")? {
+  if let Some(filters) = body::optional_array(object, "sessionPropertyFilters")? {
     let filters = filters
       .iter()
       .map(|filter| {
@@ -137,30 +139,17 @@ fn parameters(value: Option<&Value>) -> AppResult<Map<String, Value>> {
     parsed.insert("dateRange".to_owned(), json!(date_range));
   }
 
-  match object.get("action") {
-    None => {}
-    Some(Value::Object(action)) => {
-      parsed.insert(
-        "action".to_owned(),
-        json!({
-            "type": body::string(action, "type")?,
-            "value": body::string(action, "value")?,
-        }),
-      );
-    }
-    Some(_) => return Err(AppError::bad_request()),
+  if let Some(action) = body::optional_object(object, "action")? {
+    parsed.insert(
+      "action".to_owned(),
+      json!({
+          "type": body::string(action, "type")?,
+          "value": body::string(action, "value")?,
+      }),
+    );
   }
 
   Ok(parsed)
-}
-
-/// An optional array field (`z.array(...).optional()`).
-fn optional_array<'a>(object: &'a Map<String, Value>, key: &str) -> AppResult<Option<&'a Vec<Value>>> {
-  match object.get(key) {
-    None => Ok(None),
-    Some(Value::Array(items)) => Ok(Some(items)),
-    Some(_) => Err(AppError::bad_request()),
-  }
 }
 
 fn operator(filter: &Map<String, Value>) -> AppResult<&str> {
@@ -191,9 +180,7 @@ pub async fn list(
   };
 
   let auth = auth?;
-  if !can::can_view_shared_website_filters(&state.db, &auth, &website_id).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_view_shared_website_filters(&state.db, &auth, &website_id).await?)?;
 
   Ok(Json(
     segment::list(&state.db, db_id(&website_id)?, kind, &filters).await?,
@@ -211,15 +198,13 @@ pub async fn create(
   let input = input(body::object(&body)?)?;
 
   let auth = auth?;
-  if !can::can_change_website(&state.db, &auth, &website_id, WEBSITE_UPDATE).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_change_website(&state.db, &auth, &website_id, WEBSITE_UPDATE).await?)?;
   // Admins pass for any ID; upstream then saves a segment for no website.
   let Some(found) = website::get(&state.db, &website_id).await? else {
     return Err(AppError::NotFound);
   };
 
-  let id = crypto::random_uuid(state.config.collect.use_uuidv7);
+  let id = state.new_id();
   let created = segment::create(
     &state.db,
     id,
@@ -239,9 +224,7 @@ pub async fn get(
   auth: Auth,
   Path((website_id, segment_id)): Path<(String, String)>,
 ) -> AppResult<Json<Value>> {
-  if !can::can_view_shared_website_filters(&state.db, &auth, &website_id).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_view_shared_website_filters(&state.db, &auth, &website_id).await?)?;
 
   Ok(Json(find(&state, &website_id, &segment_id).await?.to_json()))
 }
@@ -258,9 +241,7 @@ pub async fn update(
   let input = input(body::object(&body)?)?;
 
   let auth = auth?;
-  if !can::can_change_website(&state.db, &auth, &website_id, WEBSITE_UPDATE).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_change_website(&state.db, &auth, &website_id, WEBSITE_UPDATE).await?)?;
   let found = find(&state, &website_id, &segment_id).await?;
 
   let updated = segment::update(&state.db, found.segment_id, input.kind, input.name, &input.parameters)
@@ -277,16 +258,14 @@ pub async fn delete(
   auth: Auth,
   Path((website_id, segment_id)): Path<(String, String)>,
 ) -> AppResult<Json<Value>> {
-  if !can::can_change_website(&state.db, &auth, &website_id, WEBSITE_DELETE).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_change_website(&state.db, &auth, &website_id, WEBSITE_DELETE).await?)?;
   let found = find(&state, &website_id, &segment_id).await?;
 
   if !segment::delete(&state.db, found.segment_id).await? {
     return Err(AppError::NotFound);
   }
 
-  Ok(Json(json!({ "ok": true })))
+  Ok(ok())
 }
 
 #[cfg(test)]

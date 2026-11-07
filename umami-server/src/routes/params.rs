@@ -50,6 +50,11 @@ impl Params {
     self.0.get(key).map(String::as_str)
   }
 
+  /// A flag parameter: set to any non-empty value.
+  pub fn flag(&self, key: &str) -> bool {
+    self.get(key).is_some_and(|value| !value.is_empty())
+  }
+
   /// Every parameter, in no particular order.
   pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
     self.0.iter().map(|(k, v)| (k.as_str(), v.as_str()))

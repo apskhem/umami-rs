@@ -9,102 +9,29 @@ use serde_json::{
   Value,
   json,
 };
+use umami_parity::fixtures::{
+  Entity,
+  secret,
+  seed_entity,
+  seed_share,
+  seed_team,
+  share_token,
+  tag,
+  timestamps,
+};
 use umami_parity::{
-  APP_SECRET,
   Response,
   Stack,
-  TestUser,
   assert_same,
   assert_same_by,
   mask,
 };
-use umami_server::{
-  crypto,
-  jwt,
-};
+use umami_server::jwt;
 use uuid::Uuid;
 
 /// Hides the values each server generates itself.
 fn generated(value: &mut Value) {
   mask(value, &["id", "slug", "createdAt", "updatedAt"]);
-}
-
-/// Hides the timestamps each server sets when it writes.
-fn timestamps(value: &mut Value) {
-  mask(value, &["createdAt", "updatedAt"]);
-}
-
-/// A unique tag, for slugs and names.
-fn tag() -> String {
-  Uuid::new_v4().simple().to_string()[..10].to_owned()
-}
-
-fn secret() -> String {
-  crypto::hash(&[APP_SECRET])
-}
-
-/// A share token for `claims`, as `/api/share/{slug}` issues them.
-fn share_token(claims: Value) -> String {
-  let mut claims = claims;
-  claims["type"] = json!("share");
-  claims["iat"] = json!(1);
-  jwt::sign(&claims, &secret())
-}
-
-/// Creates the same team, with the same members, in both databases.
-async fn seed_team(stack: &Stack, members: &[(&TestUser, &str)]) -> Uuid {
-  let id = Uuid::new_v4();
-  stack
-    .execute("insert into team (team_id, name) values ($1[1], 'Parity team')", &[id])
-    .await;
-  for (user, role) in members {
-    stack
-      .execute(
-        &format!("insert into team_user (team_user_id, team_id, user_id, role) values ($1[1], $1[2], $1[3], '{role}')"),
-        &[Uuid::new_v4(), id, user.id],
-      )
-      .await;
-  }
-  id
-}
-
-/// Creates the same website, link, pixel or board (by `table`) in both databases.
-async fn seed_entity(stack: &Stack, table: &str, user: Option<Uuid>, team: Option<Uuid>) -> Uuid {
-  let id = Uuid::new_v4();
-  let owner = |id: Option<Uuid>| id.map_or_else(|| "null".to_owned(), |id| format!("'{id}'"));
-  let (columns, values) = match table {
-    "website" => ("name, domain", "'Parity', 'example.com'"),
-    "link" => ("name, url, slug", "'Parity', 'https://example.com', $1[1]::text"),
-    "pixel" => ("name, slug", "'Parity', $1[1]::text"),
-    _ => ("name, type, description, parameters", "'Parity', 'mixed', '', '{}'"),
-  };
-  stack
-    .execute(
-      &format!(
-        "insert into {table} ({table}_id, user_id, team_id, {columns}) values ($1[1], {}, {}, {values})",
-        owner(user),
-        owner(team)
-      ),
-      &[id],
-    )
-    .await;
-  id
-}
-
-/// Creates the same share link in both databases.
-async fn seed_share(stack: &Stack, entity: Uuid, share_type: i32, parameters: &str) -> (Uuid, String) {
-  let id = Uuid::new_v4();
-  let slug = format!("parity{}", tag());
-  stack
-    .execute(
-      &format!(
-        "insert into share (share_id, entity_id, name, share_type, slug, parameters, created_at) \
-         values ($1[1], $1[2], 'Shared', {share_type}, '{slug}', '{parameters}', '2026-01-02T03:04:05.678Z')"
-      ),
-      &[id, entity],
-    )
-    .await;
-  (id, slug)
 }
 
 #[tokio::test]
@@ -117,9 +44,9 @@ async fn creating_shares() {
   let (viewer, viewer_tokens) = stack.session("user").await;
   let (_, outsider) = stack.session("user").await;
   let team = seed_team(&stack, &[(&member, "team-member"), (&viewer, "team-view-only")]).await;
-  let own = seed_entity(&stack, "website", Some(owner.id), None).await;
-  let team_site = seed_entity(&stack, "website", None, Some(team)).await;
-  let link = seed_entity(&stack, "link", Some(owner.id), None).await;
+  let own = seed_entity(&stack, Entity::Website, "Parity", Some(owner.id), None).await;
+  let team_site = seed_entity(&stack, Entity::Website, "Parity", None, Some(team)).await;
+  let link = seed_entity(&stack, Entity::Link, "Parity", Some(owner.id), None).await;
   let website_shares = |id: Uuid| format!("/api/websites/{id}/shares");
 
   for (tokens, path, body, status) in [
@@ -268,8 +195,8 @@ async fn listing_and_managing_shares() {
   let (viewer, viewer_tokens) = stack.session("user").await;
   let (_, outsider) = stack.session("user").await;
   let team = seed_team(&stack, &[(&member, "team-member"), (&viewer, "team-view-only")]).await;
-  let own = seed_entity(&stack, "website", Some(owner.id), None).await;
-  let team_site = seed_entity(&stack, "website", None, Some(team)).await;
+  let own = seed_entity(&stack, Entity::Website, "Parity", Some(owner.id), None).await;
+  let team_site = seed_entity(&stack, Entity::Website, "Parity", None, Some(team)).await;
 
   let mut own_shares = Vec::new();
   for minutes in 0..3 {
@@ -424,12 +351,12 @@ async fn opening_shares() {
   let (member, _) = stack.session("user").await;
   let (other, _) = stack.session("user").await;
   let team = seed_team(&stack, &[(&member, "team-owner")]).await;
-  let website = seed_entity(&stack, "website", Some(owner.id), None).await;
-  let link = seed_entity(&stack, "link", Some(owner.id), None).await;
-  let pixel = seed_entity(&stack, "pixel", Some(owner.id), None).await;
-  let team_site = seed_entity(&stack, "website", None, Some(team)).await;
-  let member_site = seed_entity(&stack, "website", Some(member.id), None).await;
-  let foreign = seed_entity(&stack, "website", Some(other.id), None).await;
+  let website = seed_entity(&stack, Entity::Website, "Parity", Some(owner.id), None).await;
+  let link = seed_entity(&stack, Entity::Link, "Parity", Some(owner.id), None).await;
+  let pixel = seed_entity(&stack, Entity::Pixel, "Parity", Some(owner.id), None).await;
+  let team_site = seed_entity(&stack, Entity::Website, "Parity", None, Some(team)).await;
+  let member_site = seed_entity(&stack, Entity::Website, "Parity", Some(member.id), None).await;
+  let foreign = seed_entity(&stack, Entity::Website, "Parity", Some(other.id), None).await;
 
   let (_, website_slug) = seed_share(&stack, website, 1, r#"{"overview": true}"#).await;
   let (_, link_slug) = seed_share(&stack, link, 2, "{}").await;
@@ -447,7 +374,7 @@ async fn opening_shares() {
     (Some(owner.id), None, vec![website, foreign]),
     (None, Some(team), vec![team_site, member_site, foreign]),
   ] {
-    let board = seed_entity(&stack, "board", user, team).await;
+    let board = seed_entity(&stack, Entity::Board, "Parity", user, team).await;
     let parameters = json!({ "linkId": link, "rows": rows(&ids) });
     stack
       .execute(
@@ -497,8 +424,8 @@ async fn managing_segments() {
   let (viewer, viewer_tokens) = stack.session("user").await;
   let (_, outsider) = stack.session("user").await;
   let team = seed_team(&stack, &[(&member, "team-member"), (&viewer, "team-view-only")]).await;
-  let own = seed_entity(&stack, "website", Some(owner.id), None).await;
-  let team_site = seed_entity(&stack, "website", None, Some(team)).await;
+  let own = seed_entity(&stack, Entity::Website, "Parity", Some(owner.id), None).await;
+  let team_site = seed_entity(&stack, Entity::Website, "Parity", None, Some(team)).await;
   let segments = |id: Uuid| format!("/api/websites/{id}/segments");
 
   let full = json!({

@@ -222,7 +222,7 @@ pub fn localhost() -> url::Url {
 fn coerce_int(value: &Value) -> Result<i64, Invalid> {
   let number = match value {
     Value::Number(n) => n.as_f64().unwrap_or(f64::NAN),
-    Value::String(s) => super::js::string_to_number(s),
+    Value::String(s) => crate::js::string_to_number(s),
     Value::Bool(b) => f64::from(u8::from(*b)),
     _ => f64::NAN,
   };

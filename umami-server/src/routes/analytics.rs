@@ -14,9 +14,15 @@ use serde_json::{
 };
 use uuid::Uuid;
 
-use super::body;
 use super::params::Params;
-use crate::analytics::date::Compare;
+use super::{
+  body,
+  ok,
+};
+use crate::analytics::date::{
+  self,
+  Compare,
+};
 use crate::analytics::filters::{
   self,
   EVENT_COLUMNS,
@@ -41,7 +47,7 @@ use crate::error::{
   AppError,
   AppResult,
 };
-use crate::json as js;
+use crate::js;
 use crate::permissions::{
   self as can,
   WEBSITE_DELETE,
@@ -75,9 +81,7 @@ async fn authorize(
 ) -> AppResult<(Uuid, QueryFilters)> {
   let filters = filters::from_request(&state.db, params, options).await?;
   let auth = auth?;
-  if !can::can_view_website_section(&state.db, &auth, website_id, sections).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_view_website_section(&state.db, &auth, website_id, sections).await?)?;
 
   let website_id = db_id(website_id)?;
   let filters = filters.for_website(&state.db, website_id).await?;
@@ -162,7 +166,7 @@ fn metric_parameters(params: &Params) -> AppResult<(String, Page)> {
     let Some(value) = params.get(key) else {
       return Ok(default);
     };
-    let number = crate::collect::js::string_to_number(value);
+    let number = js::string_to_number(value);
     if !number.is_finite() || number < 0.0 {
       return Err(AppError::bad_request());
     }
@@ -265,9 +269,7 @@ pub async fn active(
   Path(website_id): Path<String>,
 ) -> AppResult<Json<Value>> {
   let sections = ["overview", "realtime"];
-  if !can::can_view_website_section(&state.db, &auth, &website_id, &sections).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_view_website_section(&state.db, &auth, &website_id, &sections).await?)?;
 
   Ok(Json(queries::active_visitors(&state.db, db_id(&website_id)?).await?))
 }
@@ -279,9 +281,7 @@ pub async fn date_range(
   auth: Auth,
   Path(website_id): Path<String>,
 ) -> AppResult<Json<Value>> {
-  if !can::can_view_shared_website(&state.db, &auth, &website_id).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_view_shared_website(&state.db, &auth, &website_id).await?)?;
 
   Ok(Json(queries::date_range(&state.db, db_id(&website_id)?).await?))
 }
@@ -369,7 +369,7 @@ pub async fn event_series(
   let limit = match params.get("limit") {
     None => None,
     Some(value) => {
-      let number = crate::collect::js::string_to_number(value);
+      let number = js::string_to_number(value);
       if !number.is_finite() || number < 0.0 {
         return Err(AppError::bad_request());
       }
@@ -466,9 +466,7 @@ const SESSION_SECTIONS: &[&str] = &["sessions", "events", "realtime", "revenue"]
 
 /// The website and session IDs, once the caller may view the website's sessions.
 async fn session_access(state: &AppState, auth: &Auth, website_id: &str, session_id: &str) -> AppResult<(Uuid, Uuid)> {
-  if !can::can_view_website_section(&state.db, auth, website_id, SESSION_SECTIONS).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_view_website_section(&state.db, auth, website_id, SESSION_SECTIONS).await?)?;
   Ok((db_id(website_id)?, db_id(session_id)?))
 }
 
@@ -523,16 +521,14 @@ pub async fn delete_session(
   auth: Auth,
   Path((website_id, session_id)): Path<(String, String)>,
 ) -> AppResult<Json<Value>> {
-  if !can::can_change_website(&state.db, &auth, &website_id, WEBSITE_DELETE).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_change_website(&state.db, &auth, &website_id, WEBSITE_DELETE).await?)?;
   let (website_id, session_id) = (db_id(&website_id)?, db_id(&session_id)?);
 
   if !sessions::delete(&state.db, website_id, session_id).await? {
     return Err(AppError::NotFound);
   }
 
-  Ok(Json(json!({ "ok": true })))
+  Ok(ok())
 }
 
 /// `GET /api/websites/{websiteId}/sessions/{sessionId}/activity`: the session's
@@ -546,11 +542,11 @@ pub async fn session_activity(
 ) -> AppResult<Json<Value>> {
   let params = Params::parse(query.as_deref());
   let timestamp = |key: &str| -> AppResult<chrono::DateTime<chrono::Utc>> {
-    let number = crate::collect::js::string_to_number(params.get(key).ok_or_else(AppError::bad_request)?);
+    let number = js::string_to_number(params.get(key).ok_or_else(AppError::bad_request)?);
     if number.fract() != 0.0 {
       return Err(AppError::bad_request());
     }
-    crate::analytics::date::from_js_millis(number).ok_or_else(AppError::bad_request)
+    date::from_js_millis(number).ok_or_else(AppError::bad_request)
   };
   let (mut start, mut end) = (timestamp("startAt")?, timestamp("endAt")?);
   let requested_identity = params.get("distinctId").map(str::to_owned);
@@ -577,8 +573,8 @@ pub async fn session_activity(
     if session_ids.len() > 1
       && let (Some(first), Some(last)) = (dates.iter().min(), dates.iter().max())
     {
-      start = start.min(month_start(*first));
-      end = end.max(month_end(*last));
+      start = start.min(date::month_start(*first));
+      end = end.max(date::month_end(*last));
     }
   }
 
@@ -593,25 +589,6 @@ pub async fn session_activity(
 
   let rows = sessions::activity(&state.db, website_id, &session_ids, &filters).await?;
   Ok(Json(Value::Array(rows)))
-}
-
-/// date-fns `startOfMonth` (UTC).
-fn month_start(at: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
-  use chrono::{
-    Datelike,
-    TimeZone,
-  };
-  chrono::Utc
-    .with_ymd_and_hms(at.year(), at.month(), 1, 0, 0, 0)
-    .single()
-    .unwrap_or(at)
-}
-
-/// date-fns `endOfMonth` (UTC): the month's last millisecond.
-fn month_end(at: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
-  month_start(at)
-    .checked_add_months(chrono::Months::new(1))
-    .map_or(at, |next| next - chrono::Duration::milliseconds(1))
 }
 
 /// `GET /api/websites/{websiteId}/sessions/{sessionId}/properties`: the

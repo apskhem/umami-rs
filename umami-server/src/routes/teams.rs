@@ -13,17 +13,17 @@ use serde_json::{
   json,
 };
 
-use super::body;
 use super::params::{
   PAGING_SEARCH,
   PAGING_SEARCH_SORTING,
   PAGING_SORTING,
   Params,
 };
-use crate::auth::{
-  Auth,
-  store,
+use super::{
+  body,
+  ok,
 };
+use crate::auth::Auth;
 use crate::crypto;
 use crate::error::{
   AppError,
@@ -38,6 +38,7 @@ use crate::permissions::{
 };
 use crate::queries::{
   team,
+  user,
   website,
 };
 use crate::state::AppState;
@@ -47,10 +48,6 @@ const TEAM_ROLES: &[&str] = &[team::ROLE_MEMBER, "team-view-only", team::ROLE_MA
 
 const NOT_OWNER_OR_MANAGER: &str = "You must be the owner/manager of this team.";
 const NOT_MEMBER: &str = "The User does not exists on this team.";
-
-fn new_id(state: &AppState) -> uuid::Uuid {
-  crypto::random_uuid(state.config.collect.use_uuidv7)
-}
 
 /// `GET /api/teams`: the caller's teams.
 pub async fn list(
@@ -75,18 +72,16 @@ pub async fn create(State(state): State<AppState>, auth: AppResult<Auth>, body: 
   let owner_id = body::optional_string(object, "ownerId")?.map(body::uuid).transpose()?;
 
   let auth = auth?;
-  if !can::can_create_team(&auth) {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_create_team(&auth))?;
   let user = auth.user()?;
   let owner = owner_id.filter(|_| user.is_admin).unwrap_or(user.id);
   // Upstream accepts an owner that does not exist.
-  if owner != user.id && store::user(&state.db, owner).await?.is_none() {
+  if owner != user.id && user::get(&state.db, owner).await?.is_none() {
     return Err(AppError::user_not_found());
   }
 
   let access_code = format!("team_{}", crypto::random_chars(16));
-  let (created, member) = team::create(&state.db, new_id(&state), name, &access_code, (new_id(&state), owner)).await?;
+  let (created, member) = team::create(&state.db, state.new_id(), name, &access_code, (state.new_id(), owner)).await?;
 
   Ok(Json(json!([created.to_json(), member.to_json()])))
 }
@@ -108,16 +103,14 @@ pub async fn join(State(state): State<AppState>, auth: AppResult<Auth>, body: By
     return Err(AppError::BadRequest("User is already a team member.".to_owned()));
   }
 
-  let member = team::add_member(&state.db, new_id(&state), user_id, found.team_id, team::ROLE_MEMBER).await?;
+  let member = team::add_member(&state.db, state.new_id(), user_id, found.team_id, team::ROLE_MEMBER).await?;
 
   Ok(Json(Value::Object(member.to_json())))
 }
 
 /// `GET /api/teams/{teamId}`: the team and its memberships.
 pub async fn get(State(state): State<AppState>, auth: Auth, Path(team_id): Path<String>) -> AppResult<Json<Value>> {
-  if !can::can_view_team(&state.db, &auth, &team_id).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_view_team(&state.db, &auth, &team_id).await?)?;
 
   match team::get_with_members(&state.db, db_id(&team_id)?).await? {
     Some(found) => Ok(Json(found)),
@@ -164,7 +157,7 @@ pub async fn delete(State(state): State<AppState>, auth: Auth, Path(team_id): Pa
     return Err(AppError::NotFound);
   }
 
-  Ok(Json(json!({ "ok": true })))
+  Ok(ok())
 }
 
 /// `GET /api/teams/{teamId}/users`: the team's members.
@@ -201,7 +194,7 @@ pub async fn add_member(
   }
 
   // Upstream adds users that do not exist, which then list with `user: null`.
-  if store::user(&state.db, user_id).await?.is_none() {
+  if user::get(&state.db, user_id).await?.is_none() {
     return Err(AppError::user_not_found());
   }
   let team_id = db_id(&team_id)?;
@@ -209,7 +202,7 @@ pub async fn add_member(
     return Err(AppError::BadRequest("User is already a member of the Team.".to_owned()));
   }
 
-  let member = team::add_member(&state.db, new_id(&state), user_id, team_id, role).await?;
+  let member = team::add_member(&state.db, state.new_id(), user_id, team_id, role).await?;
 
   Ok(Json(Value::Object(member.to_json())))
 }
@@ -297,7 +290,7 @@ pub async fn remove_member(
 
   team::remove_member(&state.db, team_id, target.user_id).await?;
 
-  Ok(Json(json!({ "ok": true })))
+  Ok(ok())
 }
 
 /// `GET /api/teams/{teamId}/websites`
@@ -309,9 +302,7 @@ pub async fn websites(
 ) -> AppResult<Json<Value>> {
   let filters = Params::parse(query.as_deref()).filters(PAGING_SEARCH_SORTING)?;
   let auth = auth?;
-  if !can::can_view_team(&state.db, &auth, &team_id).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_view_team(&state.db, &auth, &team_id).await?)?;
 
   let scope = website::Scope::Team(db_id(&team_id)?);
 

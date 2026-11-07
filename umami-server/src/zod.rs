@@ -1,8 +1,9 @@
 //! Ports of the zod validators upstream's request schemas use.
 
+use serde_json::Value;
 use uuid::Uuid;
 
-use crate::collect::js;
+use crate::js;
 
 /// zod 4's `z.uuid()`: hyphenated, RFC 9562 variant, version 1–8 (or the nil/max UUIDs).
 pub fn uuid(s: &str) -> Option<Uuid> {
@@ -38,6 +39,21 @@ pub fn positive_int(s: &str) -> Option<i64> {
   (number.fract() == 0.0 && number > 0.0 && number <= MAX_SAFE).then_some(number as i64)
 }
 
+/// `z.coerce.number().int()` applied to a JSON body field, limited to what a
+/// Postgres `INTEGER` holds (upstream fails with a 500 beyond that).
+pub fn coerce_int(value: Option<&Value>) -> Option<i32> {
+  // `Number(value)`; `undefined` and objects are `NaN`.
+  let number = match value? {
+    Value::Number(n) => n.as_f64()?,
+    Value::String(s) => js::string_to_number(s),
+    Value::Bool(b) => f64::from(u8::from(*b)),
+    Value::Null => 0.0,
+    Value::Array(_) | Value::Object(_) => return None,
+  };
+
+  (number.fract() == 0.0 && (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&number)).then_some(number as i32)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -67,5 +83,23 @@ mod tests {
     for invalid in ["", "0", "-1", "1.5", "abc", "Infinity", "1e300"] {
       assert_eq!(positive_int(invalid), None, "{invalid}");
     }
+  }
+
+  #[test]
+  fn coerces_ints_like_zod() {
+    use serde_json::json;
+
+    let coerce = |value: Value| coerce_int(Some(&value));
+    assert_eq!(coerce(json!(1)), Some(1));
+    assert_eq!(coerce(json!("4")), Some(4));
+    assert_eq!(coerce(json!(" 2 ")), Some(2));
+    assert_eq!(coerce(json!(true)), Some(1));
+    assert_eq!(coerce(json!(null)), Some(0));
+    assert_eq!(coerce(json!("")), Some(0));
+
+    for invalid in [json!(1.5), json!("x"), json!({}), json!(1e10)] {
+      assert_eq!(coerce(invalid.clone()), None, "{invalid}");
+    }
+    assert_eq!(coerce_int(None), None);
   }
 }

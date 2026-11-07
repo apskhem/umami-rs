@@ -9,72 +9,23 @@ use serde_json::{
   Value,
   json,
 };
+use umami_parity::fixtures::{
+  seed_team,
+  seed_website,
+  tag,
+  timestamps,
+};
 use umami_parity::{
   APP_SECRET,
   Stack,
-  TestUser,
   assert_same,
   assert_same_by,
-  mask,
 };
 use umami_server::{
   crypto,
   jwt,
 };
 use uuid::Uuid;
-
-/// Hides the timestamps each server sets when it writes a website.
-fn timestamps(value: &mut Value) {
-  mask(value, &["createdAt", "updatedAt", "resetAt"]);
-}
-
-/// A unique tag, for names and search terms.
-fn tag() -> String {
-  Uuid::new_v4().simple().to_string()[..10].to_owned()
-}
-
-/// Creates the same team, with the same members, in both databases.
-async fn seed_team(stack: &Stack, members: &[(&TestUser, &str)]) -> Uuid {
-  let id = Uuid::new_v4();
-  stack
-    .execute(
-      "insert into team (team_id, name, created_at) values ($1[1], 'Parity team', '2026-01-02T03:04:05.678Z')",
-      &[id],
-    )
-    .await;
-  for (user, role) in members {
-    stack
-      .execute(
-        &format!(
-          "insert into team_user (team_user_id, team_id, user_id, role) \
-                     values ($1[1], $1[2], $1[3], '{role}')"
-        ),
-        &[Uuid::new_v4(), id, user.id],
-      )
-      .await;
-  }
-  id
-}
-
-/// Creates the same website in both databases.
-async fn seed_website(stack: &Stack, name: &str, user: Option<Uuid>, team: Option<Uuid>) -> Uuid {
-  let id = Uuid::new_v4();
-  let owner = match (user, team) {
-    (Some(_), _) => "$1[2], null",
-    (None, Some(_)) => "null, $1[2]",
-    (None, None) => "null, null",
-  };
-  stack
-    .execute(
-      &format!(
-        "insert into website (website_id, name, domain, user_id, team_id, created_at) \
-                 values ($1[1], '{name}', 'example.com', {owner}, '2026-01-02T03:04:05.678Z')"
-      ),
-      &[id, user.or(team).unwrap_or(id)],
-    )
-    .await;
-  id
-}
 
 #[tokio::test]
 #[ignore = "requires the parity stack (parity/compose.yaml)"]

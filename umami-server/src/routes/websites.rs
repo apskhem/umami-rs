@@ -17,33 +17,39 @@ use serde_json::{
   json,
 };
 
-use super::body;
 use super::params::{
   PAGING_SEARCH_SORTING,
   Params,
 };
-use super::users::website_scope;
-use crate::auth::{
-  Auth,
-  store,
+use super::{
+  body,
+  ok,
 };
-use crate::crypto;
+use crate::auth::Auth;
 use crate::error::{
   AppError,
   AppResult,
 };
+use crate::js;
 use crate::permissions::{
   self as can,
   WEBSITE_DELETE,
   WEBSITE_UPDATE,
   db_id,
 };
-use crate::queries::team;
+use crate::queries::share::{
+  self,
+  NewShare,
+};
 use crate::queries::website::{
   self,
   NewWebsite,
   Website,
   WebsiteUpdate,
+};
+use crate::queries::{
+  team,
+  user,
 };
 use crate::state::AppState;
 
@@ -54,8 +60,6 @@ static DOMAIN: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("valid domain regex")
 });
-
-const SHARE_ID_TAKEN: &str = "That share ID is already taken.";
 
 /// A website name: `z.string().trim().min(1).max(100)`.
 fn name(value: &str) -> AppResult<&str> {
@@ -111,7 +115,7 @@ pub async fn list(
   let filters = params.filters(PAGING_SEARCH_SORTING)?;
   let user_id = auth?.user()?.id;
 
-  let scope = website_scope(&params, user_id);
+  let scope = website::Scope::for_user(user_id, params.flag("includeTeams"));
 
   Ok(Json(website::list(&state.db, scope, filters).await?))
 }
@@ -148,7 +152,7 @@ pub async fn create(State(state): State<AppState>, auth: AppResult<Auth>, body: 
   let created = website::create(
     &mut tx,
     &NewWebsite {
-      id: id.unwrap_or_else(|| new_id(&state)),
+      id: id.unwrap_or_else(|| state.new_id()),
       name,
       domain,
       user_id: team_id.is_none().then_some(user_id),
@@ -162,9 +166,10 @@ pub async fn create(State(state): State<AppState>, auth: AppResult<Auth>, body: 
   let share = match share_id.filter(|slug| !slug.is_empty()) {
     Some(slug) => {
       Some(
-        website::create_share(&mut tx, new_id(&state), &created, slug)
+        share::create(&mut *tx, &NewShare::for_website(state.new_id(), &created, slug))
           .await
-          .map_err(|e| AppError::taken(e, SHARE_ID_TAKEN))?,
+          .map_err(|e| AppError::taken(e, share::SLUG_TAKEN))?
+          .slug,
       )
     }
     None => None,
@@ -174,15 +179,9 @@ pub async fn create(State(state): State<AppState>, auth: AppResult<Auth>, body: 
   Ok(Json(with_share(&created, share)))
 }
 
-fn new_id(state: &AppState) -> uuid::Uuid {
-  crypto::random_uuid(state.config.collect.use_uuidv7)
-}
-
 /// `GET /api/websites/{websiteId}`: the website, or `null` if there is none.
 pub async fn get(State(state): State<AppState>, auth: Auth, Path(website_id): Path<String>) -> AppResult<Json<Value>> {
-  if !can::can_view_shared_website(&state.db, &auth, &website_id).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_view_shared_website(&state.db, &auth, &website_id).await?)?;
 
   match website::get(&state.db, &website_id).await? {
     Some(found) => Ok(Json(website::with_share_id(&state.db, &found).await?)),
@@ -206,9 +205,7 @@ pub async fn update(
   let replay_input = replay_config_input(object)?;
 
   let auth = auth?;
-  if !can::can_change_website(&state.db, &auth, &website_id, WEBSITE_UPDATE).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_change_website(&state.db, &auth, &website_id, WEBSITE_UPDATE).await?)?;
 
   let Some(current) = website::get(&state.db, &website_id).await? else {
     return Err(AppError::BadRequest("Website not found.".to_owned()));
@@ -239,14 +236,15 @@ pub async fn update(
     .ok_or_else(|| AppError::Internal(anyhow::anyhow!("website disappeared during update")))?;
 
   if share_id == Some(None) {
-    website::delete_shares(&mut tx, updated.website_id).await?;
+    share::delete_for_entities(&mut *tx, &[updated.website_id]).await?;
   }
   let created_share = match share_id.flatten().filter(|slug| !slug.is_empty()) {
     Some(slug) => {
       Some(
-        website::create_share(&mut tx, new_id(&state), &updated, slug)
+        share::create(&mut *tx, &NewShare::for_website(state.new_id(), &updated, slug))
           .await
-          .map_err(|e| AppError::taken(e, SHARE_ID_TAKEN))?,
+          .map_err(|e| AppError::taken(e, share::SLUG_TAKEN))?
+          .slug,
       )
     }
     None => None,
@@ -255,7 +253,7 @@ pub async fn update(
 
   let share = match created_share {
     Some(slug) => Some(slug),
-    None => website::latest_share(&state.db, updated.website_id).await?,
+    None => share::latest_slug(&state.db, updated.website_id).await?,
   };
 
   Ok(Json(with_share(&updated, share)))
@@ -309,7 +307,7 @@ fn recorder_config(value: &Value) -> Map<String, Value> {
   }
   for key in ["sampleRate", "heatmapSampleRate"] {
     if let Some(rate) = object.get(key).and_then(Value::as_f64) {
-      config.insert(key.to_owned(), js_number(rate));
+      config.insert(key.to_owned(), js::number(rate));
     }
   }
   if let Some(level @ ("strict" | "moderate")) = object.get("maskLevel").and_then(Value::as_str) {
@@ -317,7 +315,7 @@ fn recorder_config(value: &Value) -> Map<String, Value> {
   }
   if let Some(duration) = object.get("maxDuration").and_then(Value::as_f64) {
     // `Math.round`: halves round up.
-    config.insert("maxDuration".to_owned(), js_number((duration + 0.5).floor()));
+    config.insert("maxDuration".to_owned(), js::number((duration + 0.5).floor()));
   }
   if let Some(selector) = object.get("blockSelector").filter(|v| v.is_string()) {
     config.insert("blockSelector".to_owned(), selector.clone());
@@ -331,30 +329,19 @@ fn recorder_enabled(config: &Map<String, Value>) -> bool {
   config.contains_key("replayEnabled") || config.contains_key("heatmapEnabled")
 }
 
-/// A number as JavaScript serializes it (`1`, not `1.0`).
-fn js_number(x: f64) -> Value {
-  if x.fract() == 0.0 && x.abs() <= 9_007_199_254_740_991.0 {
-    json!(x as i64)
-  } else {
-    json!(x)
-  }
-}
-
 /// `DELETE /api/websites/{websiteId}`: deletes the website and its data.
 pub async fn delete(
   State(state): State<AppState>,
   auth: Auth,
   Path(website_id): Path<String>,
 ) -> AppResult<Json<Value>> {
-  if !can::can_change_website(&state.db, &auth, &website_id, WEBSITE_DELETE).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_change_website(&state.db, &auth, &website_id, WEBSITE_DELETE).await?)?;
 
   if !website::delete(&state.db, db_id(&website_id)?).await? {
     return Err(AppError::NotFound);
   }
 
-  Ok(Json(json!({ "ok": true })))
+  Ok(ok())
 }
 
 /// `POST /api/websites/{websiteId}/reset`: deletes the website's collected data.
@@ -363,15 +350,13 @@ pub async fn reset(
   auth: Auth,
   Path(website_id): Path<String>,
 ) -> AppResult<Json<Value>> {
-  if !can::can_change_website(&state.db, &auth, &website_id, WEBSITE_UPDATE).await? {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_change_website(&state.db, &auth, &website_id, WEBSITE_UPDATE).await?)?;
 
   if !website::reset(&state.db, db_id(&website_id)?).await? {
     return Err(AppError::NotFound);
   }
 
-  Ok(Json(json!({ "ok": true })))
+  Ok(ok())
 }
 
 /// `POST /api/websites/{websiteId}/transfer`: moves the website to a user or a team.
@@ -403,7 +388,7 @@ pub async fn transfer(
   // Admins may name any user or team; upstream accepts IDs that do not exist.
   let (user_id, team_id) = owner;
   if let Some(user_id) = user_id
-    && store::user(&state.db, user_id).await?.is_none()
+    && user::get(&state.db, user_id).await?.is_none()
   {
     return Err(AppError::user_not_found());
   }

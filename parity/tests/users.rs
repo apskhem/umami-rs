@@ -4,6 +4,7 @@
 
 use reqwest::Method;
 use serde_json::json;
+use umami_parity::fixtures::tag;
 use umami_parity::{
   Stack,
   assert_same,
@@ -12,11 +13,6 @@ use umami_parity::{
   mask,
 };
 use uuid::Uuid;
-
-/// A unique, lowercase tag for names in this test run.
-fn tag() -> String {
-  Uuid::new_v4().simple().to_string()[..10].to_owned()
-}
 
 #[tokio::test]
 #[ignore = "requires the parity stack (parity/compose.yaml)"]

@@ -4,7 +4,6 @@
 mod client;
 mod data;
 mod geo;
-pub mod js;
 mod page;
 mod payload;
 mod store;
@@ -49,12 +48,15 @@ use self::store::{
   NewSession,
 };
 pub use self::token::CacheToken;
-use crate::crypto;
 use crate::error::{
   AppError,
   AppResult,
 };
 use crate::state::AppState;
+use crate::{
+  crypto,
+  js,
+};
 
 /// Upstream's `FIELD_LENGTH`.
 mod len {

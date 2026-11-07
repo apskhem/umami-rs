@@ -1,4 +1,3 @@
-use axum::Router;
 use axum::extract::{
   Request,
   State,
@@ -21,6 +20,14 @@ use axum::routing::{
   get,
   post,
 };
+use axum::{
+  Json,
+  Router,
+};
+use serde_json::{
+  Value,
+  json,
+};
 
 use crate::collect;
 use crate::config::Config;
@@ -41,6 +48,11 @@ mod teams;
 mod two_factor;
 mod users;
 mod websites;
+
+/// Upstream's `ok()`: `{"ok": true}`.
+fn ok() -> Json<Value> {
+  Json(json!({ "ok": true }))
+}
 
 /// Routes relative to `BASE_PATH`. API paths mirror upstream's `src/app/api/**/route.ts`.
 pub fn router(config: &Config) -> Router<AppState> {

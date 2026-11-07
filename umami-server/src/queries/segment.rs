@@ -4,10 +4,8 @@ use chrono::{
   DateTime,
   Utc,
 };
-use serde_json::{
-  Value,
-  json,
-};
+use serde::Serialize;
+use serde_json::Value;
 use sqlx::{
   PgPool,
   QueryBuilder,
@@ -16,20 +14,26 @@ use uuid::Uuid;
 
 use super::{
   Filters,
+  model_json,
   now,
   sort_column,
 };
-use crate::json as js;
+use crate::js;
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Segment {
+  #[serde(rename = "id")]
   pub segment_id: Uuid,
   pub website_id: Uuid,
   #[sqlx(rename = "type")]
+  #[serde(rename = "type")]
   pub kind: String,
   pub name: String,
   pub parameters: Value,
+  #[serde(serialize_with = "js::serialize_date")]
   pub created_at: Option<DateTime<Utc>>,
+  #[serde(serialize_with = "js::serialize_date")]
   pub updated_at: Option<DateTime<Utc>>,
 }
 
@@ -38,15 +42,7 @@ const COLUMNS: &str = "segment_id, website_id, type, name, parameters, created_a
 impl Segment {
   /// The Prisma model as JSON, fields in schema order.
   pub fn to_json(&self) -> Value {
-    json!({
-        "id": self.segment_id,
-        "websiteId": self.website_id,
-        "type": self.kind,
-        "name": self.name,
-        "parameters": self.parameters,
-        "createdAt": self.created_at.map(js::date),
-        "updatedAt": self.updated_at.map(js::date),
-    })
+    Value::Object(model_json(self))
   }
 }
 

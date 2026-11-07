@@ -17,8 +17,11 @@ use serde_json::{
   Value,
   json,
 };
+use umami_parity::fixtures::{
+  secret,
+  share_token,
+};
 use umami_parity::{
-  APP_SECRET,
   Stack,
   TWO_FACTOR_KEY,
   assert_same,
@@ -30,10 +33,6 @@ use umami_server::{
   jwt,
 };
 use uuid::Uuid;
-
-fn secret() -> String {
-  crypto::hash(&[APP_SECRET])
-}
 
 #[tokio::test]
 #[ignore = "requires the parity stack (parity/compose.yaml)"]
@@ -247,7 +246,7 @@ async fn api_keys_match_upstream() {
 #[ignore = "requires the parity stack (parity/compose.yaml)"]
 async fn share_tokens_match_upstream() {
   let stack = Stack::connect().await;
-  let share = jwt::sign(&json!({ "type": "share", "shareId": "abc", "iat": 1 }), &secret());
+  let share = share_token(json!({ "shareId": "abc" }));
 
   let with_context = [("x-umami-share-token", share.as_str()), ("x-umami-share-context", "1")];
   let (upstream, rs) = stack.call_both(Method::GET, "/api/me", &with_context, None).await;

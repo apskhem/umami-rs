@@ -1,9 +1,10 @@
-//! Websites and their share links (upstream's `website.ts` and `share.ts`).
+//! Websites (upstream's `website.ts`).
 
 use chrono::{
   DateTime,
   Utc,
 };
+use serde::Serialize;
 use serde_json::{
   Map,
   Value,
@@ -25,32 +26,37 @@ use super::team::{
 };
 use super::{
   Filters,
-  into_map,
+  model_json,
   now,
+  share,
   sort_column,
 };
+use crate::permissions::Owner;
 use crate::{
-  json as js,
+  js,
   zod,
 };
 
 /// Upstream's `WEBSITE_SORT_FIELDS`.
 pub const SORT_FIELDS: &[&str] = &["name", "domain", "createdAt"];
 
-/// Upstream's `ENTITY_TYPE.website`, the `share_type` of website shares.
-const SHARE_TYPE_WEBSITE: i32 = 1;
-
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Website {
+  #[serde(rename = "id")]
   pub website_id: Uuid,
   pub name: String,
   pub domain: Option<String>,
+  #[serde(serialize_with = "js::serialize_date")]
   pub reset_at: Option<DateTime<Utc>>,
   pub user_id: Option<Uuid>,
   pub team_id: Option<Uuid>,
   pub created_by: Option<Uuid>,
+  #[serde(serialize_with = "js::serialize_date")]
   pub created_at: Option<DateTime<Utc>>,
+  #[serde(serialize_with = "js::serialize_date")]
   pub updated_at: Option<DateTime<Utc>>,
+  #[serde(serialize_with = "js::serialize_date")]
   pub deleted_at: Option<DateTime<Utc>>,
   pub recorder_enabled: bool,
   pub replay_config: Option<Value>,
@@ -60,22 +66,16 @@ const WEBSITE_COLUMNS: &str = "website_id, name, domain, reset_at, user_id, team
                                created_at, updated_at, deleted_at, recorder_enabled, replay_config";
 
 impl Website {
+  pub fn owner(&self) -> Owner {
+    Owner {
+      user_id: self.user_id,
+      team_id: self.team_id,
+    }
+  }
+
   /// The Prisma model as JSON, fields in schema order.
   pub fn to_json(&self) -> Map<String, Value> {
-    into_map(json!({
-        "id": self.website_id,
-        "name": self.name,
-        "domain": self.domain,
-        "resetAt": self.reset_at.map(js::date),
-        "userId": self.user_id,
-        "teamId": self.team_id,
-        "createdBy": self.created_by,
-        "createdAt": self.created_at.map(js::date),
-        "updatedAt": self.updated_at.map(js::date),
-        "deletedAt": self.deleted_at.map(js::date),
-        "recorderEnabled": self.recorder_enabled,
-        "replayConfig": self.replay_config,
-    }))
+    model_json(self)
   }
 }
 
@@ -101,18 +101,10 @@ pub async fn get(db: &PgPool, website_id: &str) -> sqlx::Result<Option<Website>>
 /// The website as JSON with `shareId` attached (upstream's `getWebsite`).
 pub async fn with_share_id(db: &PgPool, website: &Website) -> sqlx::Result<Value> {
   let mut object = website.to_json();
-  let share_id = latest_share(db, website.website_id).await?;
+  let share_id = share::latest_slug(db, website.website_id).await?;
   object.insert("shareId".to_owned(), json!(share_id));
 
   Ok(Value::Object(object))
-}
-
-/// The slug of the entity's newest share (upstream's `getShareByEntityId`).
-pub async fn latest_share(db: &PgPool, entity_id: Uuid) -> sqlx::Result<Option<String>> {
-  sqlx::query_scalar("select slug from share where entity_id = $1 order by created_at desc limit 1")
-    .bind(entity_id)
-    .fetch_optional(db)
-    .await
 }
 
 /// Which websites a list covers, and what each list includes.
@@ -126,6 +118,18 @@ pub enum Scope {
   Team(Uuid),
   /// Every website, with `user` and `team` (the admin list).
   All,
+}
+
+impl Scope {
+  /// A user's websites, with those of teams they own or manage if
+  /// `include_teams` (the `includeTeams` parameter).
+  pub fn for_user(user_id: Uuid, include_teams: bool) -> Self {
+    if include_teams {
+      Self::WithTeamAccess(user_id)
+    } else {
+      Self::Owned(user_id)
+    }
+  }
 }
 
 /// Upstream's `getWebsites`: non-deleted websites, paged, with `shareId`.
@@ -201,13 +205,7 @@ pub async fn list(db: &PgPool, scope: Scope, filters: Filters) -> sqlx::Result<V
   }
 
   let ids: Vec<Uuid> = websites.iter().map(|w| w.website_id).collect();
-  let shares: Vec<(Uuid, String)> = sqlx::query_as(
-    "select distinct on (entity_id) entity_id, slug from share \
-         where entity_id = any($1) order by entity_id, created_at desc",
-  )
-  .bind(&ids)
-  .fetch_all(db)
-  .await?;
+  let shares = share::latest_slugs(db, &ids).await?;
 
   let data = data
     .into_iter()
@@ -380,41 +378,6 @@ pub async fn transfer(
   .await
 }
 
-/// A website share with upstream's defaults (`createShare` in the website routes).
-/// Fails on a duplicate slug.
-pub async fn create_share(
-  tx: &mut PgConnection,
-  share_id: Uuid,
-  website: &Website,
-  slug: &str,
-) -> sqlx::Result<String> {
-  let at = now();
-
-  sqlx::query_scalar(
-    "insert into share (share_id, entity_id, name, share_type, slug, parameters, \
-         created_at, updated_at) values ($1, $2, $3, $4, $5, $6, $7, $7) returning slug",
-  )
-  .bind(share_id)
-  .bind(website.website_id)
-  .bind(&website.name)
-  .bind(SHARE_TYPE_WEBSITE)
-  .bind(slug)
-  .bind(json!({ "overview": true, "events": true }))
-  .bind(at)
-  .fetch_one(tx)
-  .await
-}
-
-/// Upstream's `deleteSharesByEntityId`.
-pub async fn delete_shares(tx: &mut PgConnection, entity_id: Uuid) -> sqlx::Result<()> {
-  sqlx::query("delete from share where entity_id = $1")
-    .bind(entity_id)
-    .execute(tx)
-    .await?;
-
-  Ok(())
-}
-
 /// Upstream's `deleteWebsiteDependentData`: the collected data of `ids`.
 async fn delete_collected_data(tx: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<()> {
   for table in [
@@ -500,10 +463,7 @@ pub(super) async fn purge(tx: &mut PgConnection, ids: &[Uuid]) -> sqlx::Result<u
   for table in ["report", "segment", "annotation"] {
     delete_by_website(tx, table, ids).await?;
   }
-  sqlx::query("delete from share where entity_id = any($1)")
-    .bind(ids)
-    .execute(&mut *tx)
-    .await?;
+  share::delete_for_entities(&mut *tx, ids).await?;
 
   let deleted = sqlx::query("delete from website where website_id = any($1)")
     .bind(ids)

@@ -7,40 +7,38 @@ use axum::extract::{
   RawQuery,
   State,
 };
-use chrono::{
-  DateTime,
-  Utc,
-};
-use serde::Serialize;
 use serde_json::{
   Value,
   json,
 };
 use uuid::Uuid;
 
-use super::body;
 use super::params::{
   PAGING_SORTING,
   Params,
 };
-use super::users::website_scope;
+use super::{
+  body,
+  ok,
+};
 use crate::auth::{
   Auth,
   password,
-  store,
 };
 use crate::error::{
   AppError,
   AppResult,
 };
 use crate::queries::{
+  api_key,
   team,
+  user,
   website,
 };
 use crate::state::AppState;
 use crate::{
   crypto,
-  json as js,
+  js,
 };
 
 /// `GET /api/me`: the caller's auth context.
@@ -72,7 +70,7 @@ pub async fn websites(
   let filters = params.filters(PAGING_SORTING)?;
   let user_id = auth?.user()?.id;
 
-  let scope = website_scope(&params, user_id);
+  let scope = website::Scope::for_user(user_id, params.flag("includeTeams"));
 
   Ok(Json(website::list(&state.db, scope, filters).await?))
 }
@@ -93,28 +91,18 @@ pub async fn change_password(
   }
 
   let user_id = auth?.user()?.id;
-  let user = store::user(&state.db, user_id).await?.ok_or(AppError::Unauthorized)?;
+  let user = user::get(&state.db, user_id).await?.ok_or(AppError::Unauthorized)?;
 
   if !password::verify(current, &user.password).await {
     return Err(AppError::BadRequest("Current password is incorrect".to_owned()));
   }
 
-  let hash = password::hash(new).await;
-  let (id, username, role, created_at): (Uuid, String, String, Option<DateTime<Utc>>) = sqlx::query_as(
-    r#"update "user" set password = $2, updated_at = now() where user_id = $1
-           returning user_id, username, role, created_at"#,
-  )
-  .bind(user_id)
-  .bind(hash)
-  .fetch_one(&state.db)
-  .await?;
+  let changes = user::UserUpdate {
+    password_hash: Some(password::hash(new).await),
+    ..user::UserUpdate::default()
+  };
 
-  Ok(Json(json!({
-      "id": id,
-      "username": username,
-      "role": role,
-      "createdAt": created_at.map(js::date),
-  })))
+  Ok(Json(user::update(&state.db, user_id, &changes).await?))
 }
 
 const API_KEY_PREFIX: &str = "umami_";
@@ -122,28 +110,9 @@ const API_KEY_LENGTH: usize = 32;
 /// How much of a key is kept for display: the prefix and 8 more characters.
 const API_KEY_DISPLAY_LENGTH: usize = API_KEY_PREFIX.len() + 8;
 
-#[derive(Serialize, sqlx::FromRow)]
-#[serde(rename_all = "camelCase")]
-struct ApiKeySummary {
-  #[sqlx(rename = "api_key_id")]
-  id: Uuid,
-  name: String,
-  key_prefix: String,
-  #[serde(serialize_with = "js::serialize_date")]
-  last_used_at: Option<DateTime<Utc>>,
-  #[serde(serialize_with = "js::serialize_date")]
-  created_at: Option<DateTime<Utc>>,
-}
-
 /// `GET /api/me/api-keys`: the caller's keys, newest first (never the keys themselves).
 pub async fn list_api_keys(State(state): State<AppState>, auth: Auth) -> AppResult<Json<Value>> {
-  let keys: Vec<ApiKeySummary> = sqlx::query_as(
-    "select api_key_id, name, key_prefix, last_used_at, created_at from api_key \
-         where user_id = $1 order by created_at desc",
-  )
-  .bind(auth.user()?.id)
-  .fetch_all(&state.db)
-  .await?;
+  let keys = api_key::list(&state.db, auth.user()?.id).await?;
 
   Ok(Json(json!(keys)))
 }
@@ -163,24 +132,15 @@ pub async fn create_api_key(
   let user_id = auth?.user()?.id;
 
   let key = format!("{API_KEY_PREFIX}{}", crypto::random_chars(API_KEY_LENGTH));
-  let id = crypto::random_uuid(state.config.collect.use_uuidv7);
+  let id = state.new_id();
 
-  let created_at: Option<DateTime<Utc>> = sqlx::query_scalar(
-    "insert into api_key (api_key_id, user_id, name, key_hash, key_prefix) \
-         values ($1, $2, $3, $4, $5) returning created_at",
-  )
-  .bind(id)
-  .bind(user_id)
-  .bind(name)
-  .bind(crypto::hash(&[&key]))
-  .bind(&key[..API_KEY_DISPLAY_LENGTH])
-  .fetch_one(&state.db)
-  .await?;
+  let prefix = &key[..API_KEY_DISPLAY_LENGTH];
+  let created_at = api_key::create(&state.db, id, user_id, name, &crypto::hash(&[&key]), prefix).await?;
 
   Ok(Json(json!({
       "id": id,
       "name": name,
-      "keyPrefix": &key[..API_KEY_DISPLAY_LENGTH],
+      "keyPrefix": prefix,
       "createdAt": created_at.map(js::date),
       "key": key,
   })))
@@ -195,15 +155,9 @@ pub async fn delete_api_key(
   let user_id = auth.user()?.id;
   let key_id: Uuid = key_id.parse().map_err(|_| AppError::NotFound)?;
 
-  let deleted = sqlx::query("delete from api_key where api_key_id = $1 and user_id = $2")
-    .bind(key_id)
-    .bind(user_id)
-    .execute(&state.db)
-    .await?;
-
-  if deleted.rows_affected() == 0 {
+  if !api_key::delete(&state.db, key_id, user_id).await? {
     return Err(AppError::NotFound);
   }
 
-  Ok(Json(json!({ "ok": true })))
+  Ok(ok())
 }

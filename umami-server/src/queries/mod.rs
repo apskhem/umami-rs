@@ -5,9 +5,12 @@
 //! that leaves upstream refusing a delete or keeping orphaned rows, the delete
 //! functions here remove everything that belongs to what is deleted instead.
 
+pub mod api_key;
+pub mod board;
 pub mod segment;
 pub mod share;
 pub mod team;
+pub mod two_factor;
 pub mod user;
 pub mod website;
 
@@ -136,6 +139,11 @@ impl Filters {
 
     page
   }
+}
+
+/// A model as JSON, its fields in declaration (schema) order.
+fn model_json(model: &impl serde::Serialize) -> Map<String, Value> {
+  into_map(serde_json::to_value(model).expect("models serialize to JSON"))
 }
 
 /// Model fields as API names to columns, for `orderBy`.

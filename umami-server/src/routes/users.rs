@@ -7,23 +7,21 @@ use axum::extract::{
   RawQuery,
   State,
 };
-use serde_json::{
-  Value,
-  json,
-};
+use serde_json::Value;
 
-use super::body;
 use super::params::{
   PAGING_SEARCH_SORTING,
   PAGING_SORTING,
   Params,
 };
+use super::{
+  body,
+  ok,
+};
 use crate::auth::{
   Auth,
   password,
-  store,
 };
-use crate::crypto;
 use crate::error::{
   AppError,
   AppResult,
@@ -60,15 +58,13 @@ pub async fn create(State(state): State<AppState>, auth: AppResult<Auth>, body: 
   let role = body::one_of(body::string(object, "role")?, USER_ROLES)?;
 
   let auth = auth?;
-  if !can::can_create_user(&auth) {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_create_user(&auth))?;
 
   if user::username_owner(&state.db, username).await?.is_some() {
     return Err(AppError::BadRequest(USER_EXISTS.to_owned()));
   }
 
-  let id = id.unwrap_or_else(|| crypto::random_uuid(state.config.collect.use_uuidv7));
+  let id = id.unwrap_or_else(|| state.new_id());
   let hash = password::hash(password).await;
   // A taken ID fails here (a 500 upstream).
   let created = user::create(&state.db, id, &username.to_lowercase(), &hash, role)
@@ -80,13 +76,11 @@ pub async fn create(State(state): State<AppState>, auth: AppResult<Auth>, body: 
 
 /// `GET /api/users/{userId}`: the user, or `null` if there is none.
 pub async fn get(State(state): State<AppState>, auth: Auth, Path(user_id): Path<String>) -> AppResult<Json<Value>> {
-  if !can::can_view_user(&auth, &user_id) {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_view_user(&auth, &user_id))?;
 
-  let found = store::user(&state.db, db_id(&user_id)?).await?;
+  let found = user::get(&state.db, db_id(&user_id)?).await?;
 
-  Ok(Json(found.as_ref().map_or(Value::Null, user::to_json)))
+  Ok(Json(found.as_ref().map_or(Value::Null, user::User::to_json)))
 }
 
 /// `POST /api/users/{userId}`: changes the password (anyone, for themself) or the
@@ -113,13 +107,11 @@ pub async fn update(
     .transpose()?;
 
   let auth = auth?;
-  if !can::can_view_user(&auth, &user_id) {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_view_user(&auth, &user_id))?;
   let is_admin = auth.user()?.is_admin;
 
   let id = db_id(&user_id)?;
-  let Some(existing) = store::user(&state.db, id).await? else {
+  let Some(existing) = user::get(&state.db, id).await? else {
     return Err(AppError::NotFound);
   };
 
@@ -153,9 +145,7 @@ pub async fn update(
 /// `DELETE /api/users/{userId}`: deletes a user and everything they own (admins
 /// only).
 pub async fn delete(State(state): State<AppState>, auth: Auth, Path(user_id): Path<String>) -> AppResult<Json<Value>> {
-  if !can::can_delete_user(&auth) {
-    return Err(AppError::Unauthorized);
-  }
+  can::require(can::can_delete_user(&auth))?;
   if auth.user()?.id.to_string() == user_id {
     return Err(AppError::BadRequest("You cannot delete yourself.".to_owned()));
   }
@@ -164,7 +154,7 @@ pub async fn delete(State(state): State<AppState>, auth: Auth, Path(user_id): Pa
     return Err(AppError::NotFound);
   }
 
-  Ok(Json(json!({ "ok": true })))
+  Ok(ok())
 }
 
 /// Upstream's check on `/api/users/{userId}/*` lists: admins, or the user themself.
@@ -206,16 +196,7 @@ pub async fn websites(
   require_self_or_admin(&auth, &user_id)?;
 
   let id = db_id(&user_id)?;
-  let scope = website_scope(&params, id);
+  let scope = website::Scope::for_user(id, params.flag("includeTeams"));
 
   Ok(Json(website::list(&state.db, scope, filters).await?))
-}
-
-/// The website list scope for `includeTeams` (any non-empty value).
-pub fn website_scope(params: &Params, user_id: uuid::Uuid) -> website::Scope {
-  if params.get("includeTeams").is_some_and(|v| !v.is_empty()) {
-    website::Scope::WithTeamAccess(user_id)
-  } else {
-    website::Scope::Owned(user_id)
-  }
 }

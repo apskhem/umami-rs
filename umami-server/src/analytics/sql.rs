@@ -50,7 +50,7 @@ use crate::error::{
   AppError,
   AppResult,
 };
-use crate::json as js;
+use crate::js;
 
 /// A query parameter.
 #[derive(Clone, Debug)]
@@ -627,7 +627,7 @@ fn parse_float(value: &str) -> f64 {
   static NUMBER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[+-]?(Infinity|(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?)").expect("valid regex"));
 
-  let text = value.trim_start_matches(crate::collect::js::is_js_whitespace);
+  let text = value.trim_start_matches(js::is_js_whitespace);
   let number = NUMBER.find(text).map_or(f64::NAN, |m| {
     let matched = m.as_str();
     match matched.trim_start_matches(['+', '-']) {
