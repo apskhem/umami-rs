@@ -384,6 +384,11 @@ TEST_DATABASE_URL=postgresql://umami:umami@localhost:5432/umami \
   cargo test -- --include-ignored            # also run database tests
 ```
 
+CI (`.github/workflows/ci.yml`) runs on pushes to `main` and on pull requests:
+nightly `rustfmt`, clippy with warnings as errors, the unit, HTTP and database
+tests against Postgres 17, a build check on the minimum Rust version (1.94), and
+the parity suite below.
+
 ### Parity with upstream
 
 `parity/compose.yaml` runs upstream's official 3.4.1 image and umami-rs (built from

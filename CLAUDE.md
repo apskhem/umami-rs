@@ -32,6 +32,8 @@ docker compose -f parity/compose.yaml down -v
 
 The `rs` services are built from the repo's `Dockerfile`, so rebuild (`--build`) after server changes before rerunning parity tests.
 
+CI (`.github/workflows/ci.yml`) runs all of the above (fmt, `clippy -D warnings`, DB tests, parity) plus `cargo check` on the MSRV (`rust-version`, 1.94); keep new code building on it.
+
 ## Workspace
 
 - `umami-server` — the axum server (lib + `umami-server` binary; `umami-server healthcheck` is the Docker healthcheck).

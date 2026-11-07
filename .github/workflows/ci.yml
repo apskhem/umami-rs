@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # rustfmt.toml uses nightly-only options; stable rustfmt would ignore them.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: umami
+          POSTGRES_PASSWORD: umami
+          POSTGRES_DB: umami
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U umami -d umami"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      TEST_DATABASE_URL: postgresql://umami:umami@localhost:5432/umami
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Unit, HTTP and database tests; the parity tests have their own job.
+      - run: cargo test --workspace --exclude umami-parity --locked -- --include-ignored
+
+  msrv:
+    name: MSRV (1.94)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets --locked
+
+  parity:
+    name: Parity with upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The runner's Chrome drives the browser test; Ubuntu 24.04's AppArmor
+      # otherwise blocks the user namespaces its sandbox needs.
+      - name: Allow Chrome's sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # Upstream 3.4.1 and umami-rs (built from this checkout) side by side.
+      - name: Start the parity stack
+        run: docker compose -f parity/compose.yaml up -d --build --wait
+      - run: cargo test -p umami-parity --locked -- --ignored
+      - name: Server logs
+        if: failure()
+        run: docker compose -f parity/compose.yaml logs --no-color
+      - name: Stop the parity stack
+        if: always()
+        run: docker compose -f parity/compose.yaml down -v
