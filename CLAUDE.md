@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A headless Rust (axum + sqlx, Postgres) drop-in replacement for the **Umami v3.4.1** backend. The official tracker script, dashboard and existing Umami databases must work against it unchanged. The pinned upstream version lives in `Cargo.toml` under `[workspace.metadata.umami]`.
+A headless Rust (axum + sqlx, Postgres) drop-in replacement for the **Umami v3.4.1** backend. The official tracker script, dashboard and existing Umami databases must work against it unchanged. The pinned upstream version lives in `Cargo.toml` under `[workspace.metadata.umami]` and in `umami_db::UMAMI_VERSION` (a test keeps them equal).
 
 **Compatibility boundary:** match upstream's API (routes, request/response JSON shapes and types, status codes, error envelope) and DB schema exactly. Internal logic does *not* need to be bug-for-bug: where upstream 500s, writes partially, orphans rows or returns unstable lists, do the correct thing instead, reuse upstream's error messages where possible, cover the case in the parity tests, and document the difference in `README.md` (each feature section has a "Differences from upstream" list).
 
@@ -38,7 +38,7 @@ The `rs` services are built from the repo's `Dockerfile`, so rebuild (`--build`)
 - `umami-db` — connection options, Postgres version check and the migrator. `migrations/` is a **verbatim copy** of upstream's Prisma migrations, applied with Prisma's `_prisma_migrations` bookkeeping (same checksums, same advisory lock) so either server can migrate a database the other created. Never edit or add migrations here.
 - `crate-ua-rules` — standalone UA classification (detect-browser, isbot, ua-parser-js 1.x ports). `src/rules.rs` is `@generated` by `tools/ua-rules` — regenerate, don't hand-edit (see README).
 - `parity` (`umami-parity`) — differential tests: `parity/src/lib.rs` provides `Stack` (`call_both`, `call_as`, `assert_same`, `assert_same_rows`, `mask` for random fields) to send identical requests to upstream and umami-rs and compare responses and DB rows; `parity/src/fixtures.rs` seeds identical teams, websites, links, pixels, boards and shares in both databases and mints share tokens.
-- `tools/tracker/fetch.py` vendors upstream's `script.js` into `umami-server/assets/`; its hash is pinned as `SCRIPT_SHA256` in `umami-server/src/tracker.rs`.
+- `tools/tracker/fetch.py` vendors upstream's `script.js` and `recorder.js` into `umami-server/assets/`; their hashes are pinned as `SCRIPT_SHA256` and `RECORDER_SHA256` in `umami-server/src/tracker.rs`.
 
 ## Server architecture
 

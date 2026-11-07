@@ -12,7 +12,7 @@ databases, the official tracker script and the official dashboard work against i
 | `umami-server` | The axum HTTP server (`umami-server` binary). |
 | `crate-ua-rules` | User-agent classification (bots, browser, OS, device type), ported from the JS libraries upstream uses. Standalone: depends only on `regex` and `fancy-regex`. |
 | `parity` | Differential tests that run upstream Umami and umami-rs side by side and compare their responses and database rows. |
-| `tools/tracker` | Fetches upstream's built tracker script (`umami-server/assets/script.js`) from its release image. |
+| `tools/tracker` | Fetches upstream's built tracker and session recorder scripts (`umami-server/assets/script.js` and `recorder.js`) from its release image. |
 | `tools/ua-rules` | Generates `crate-ua-rules`' rule tables and parity fixtures from the JS libraries upstream uses. |
 
 ## Running
