@@ -107,6 +107,43 @@ pub async fn with_share_id(db: &PgPool, website: &Website) -> sqlx::Result<Value
   Ok(Value::Object(object))
 }
 
+/// Upstream's `getRecorderConfig`: the recognized settings of a stored or merged
+/// config, in its key order.
+pub fn recorder_config(value: &Value) -> Map<String, Value> {
+  let mut config = Map::new();
+  let Some(object) = value.as_object() else {
+    return config;
+  };
+
+  for key in ["replayEnabled", "heatmapEnabled"] {
+    if object.get(key) == Some(&Value::Bool(true)) {
+      config.insert(key.to_owned(), Value::Bool(true));
+    }
+  }
+  for key in ["sampleRate", "heatmapSampleRate"] {
+    if let Some(rate) = object.get(key).and_then(Value::as_f64) {
+      config.insert(key.to_owned(), js::number(rate));
+    }
+  }
+  if let Some(level @ ("strict" | "moderate")) = object.get("maskLevel").and_then(Value::as_str) {
+    config.insert("maskLevel".to_owned(), json!(level));
+  }
+  if let Some(duration) = object.get("maxDuration").and_then(Value::as_f64) {
+    // `Math.round`: halves round up.
+    config.insert("maxDuration".to_owned(), js::number((duration + 0.5).floor()));
+  }
+  if let Some(selector) = object.get("blockSelector").filter(|v| v.is_string()) {
+    config.insert("blockSelector".to_owned(), selector.clone());
+  }
+
+  config
+}
+
+/// Upstream's `getRecorderEnabled`.
+pub fn recorder_enabled(config: &Map<String, Value>) -> bool {
+  config.contains_key("replayEnabled") || config.contains_key("heatmapEnabled")
+}
+
 /// Which websites a list covers, and what each list includes.
 pub enum Scope {
   /// The user's own websites, with `user` (upstream's `getUserWebsites`).

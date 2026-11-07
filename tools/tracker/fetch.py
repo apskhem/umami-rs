@@ -1,11 +1,11 @@
-"""Fetches upstream Umami's built tracker script from its release image.
+"""Fetches upstream Umami's built tracker and recorder scripts from its release image.
 
     python3 tools/tracker/fetch.py 3.4.1
 
 Reads the image layer that holds `/app/public` straight from the GitHub container
-registry (no Docker or Node needed) and writes `umami-server/assets/script.js`,
-byte-for-byte as upstream ships it. Update `SCRIPT_SHA256` in
-`umami-server/src/tracker.rs` afterwards.
+registry (no Docker or Node needed) and writes `umami-server/assets/script.js`
+and `recorder.js`, byte-for-byte as upstream ships them. Update `SCRIPT_SHA256`
+and `RECORDER_SHA256` in `umami-server/src/tracker.rs` afterwards.
 """
 
 import hashlib
@@ -26,7 +26,8 @@ ACCEPT = ",".join(
         "application/vnd.docker.distribution.manifest.v2+json",
     ]
 )
-OUT = pathlib.Path(__file__).resolve().parents[2] / "umami-server" / "assets" / "script.js"
+OUT = pathlib.Path(__file__).resolve().parents[2] / "umami-server" / "assets"
+SCRIPTS = ["script.js", "recorder.js"]
 
 
 def main(tag: str) -> None:
@@ -49,10 +50,11 @@ def main(tag: str) -> None:
     layer = get(f"blobs/{manifest['layers'][index]['digest']}")
 
     with tarfile.open(fileobj=io.BytesIO(layer), mode="r:*") as tar:
-        script = tar.extractfile(tar.getmember("app/public/script.js")).read()
-
-    OUT.write_bytes(script)
-    print(f"wrote {OUT} ({len(script)} bytes, sha256 {hashlib.sha256(script).hexdigest()})")
+        for name in SCRIPTS:
+            script = tar.extractfile(tar.getmember(f"app/public/{name}")).read()
+            out = OUT / name
+            out.write_bytes(script)
+            print(f"wrote {out} ({len(script)} bytes, sha256 {hashlib.sha256(script).hexdigest()})")
 
 
 if __name__ == "__main__":

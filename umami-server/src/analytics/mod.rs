@@ -11,6 +11,7 @@ pub mod events;
 pub mod filters;
 pub mod queries;
 pub mod realtime;
+pub mod replays;
 pub mod reports;
 pub mod sessions;
 pub mod sql;

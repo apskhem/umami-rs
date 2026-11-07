@@ -6,6 +6,7 @@ mod data;
 mod geo;
 mod page;
 mod payload;
+pub(crate) mod record;
 mod store;
 mod token;
 
@@ -52,6 +53,7 @@ use self::payload::{
   SendBody,
   Source,
 };
+pub use self::record::record;
 use self::store::{
   NewEvent,
   NewRevenue,

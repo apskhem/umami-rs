@@ -9,6 +9,7 @@ pub mod annotation;
 pub mod api_key;
 pub mod board;
 pub mod link;
+pub mod replay;
 pub mod report;
 pub mod segment;
 pub mod share;

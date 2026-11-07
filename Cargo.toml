@@ -17,6 +17,7 @@ version = "3.4.1"
 
 [workspace.dependencies]
 crate-ua-rules = { path = "crate-ua-rules" }
+flate2 = "1.1.5"
 umami-db = { path = "umami-db" }
 umami-server = { path = "umami-server" }
 

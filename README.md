@@ -286,6 +286,37 @@ Differences from upstream:
 - A malformed annotation ID is a 404 where upstream fails with a 500, and admins
   cannot annotate a website that does not exist (404; upstream stores it).
 
+## Session replay
+
+`/recorder.js` serves upstream's session recorder byte-for-byte, and
+`GET /api/websites/{id}/recorder` gives it the website's settings (sample rates,
+mask level, maximum duration, blocked selector; upstream's defaults where unset).
+`POST /api/record` stores what it sends, as upstream does: recordings as gzipped
+chunks (counting a fragmented event once) and click and scroll heatmap events,
+for the session and visit of the request's `x-umami-cache` token, with the same
+bot, ignored-IP and 1 MB size checks.
+
+Reading back, under `/api/websites/{id}`: `replays` (filterable, searchable and
+paged, with `minDuration` in seconds) and a session's `sessions/{id}/replays`
+list recorded visits; `replays/{visitId}` plays one back, merging its chunks in
+time order and reassembling fragmented events, optionally only up to `until` (a
+time) or `chunkIndex` and `eventIndex`; `replays/saved` lists saved replays and
+`replays/saved/{visitId}` reads or sets whether one is saved (and its name);
+`heatmaps` lists the pages with clicks, or with `urlPath` gives one page's click
+points or scroll depths (`mode=scroll`) with a page snapshot.
+
+Differences from upstream:
+
+- A cache token issued for another website is refused with upstream's
+  `Invalid session token.` (upstream records under that token's session).
+- Saving a replay that is already saved renames it; upstream fails with a 500.
+- Deleted websites report the recorder as disabled and record nothing.
+- Heatmap URL paths over 500 characters are truncated, and coordinates too large
+  for their column are stored empty; upstream drops the whole batch for either.
+- Malformed website, visit and session IDs are a 404, and times or chunk numbers
+  the database cannot hold a 400, where upstream fails with a 500. Admins cannot
+  save a replay for a website that does not exist (404; upstream stores it).
+
 ## Tracker script
 
 `/script.js` serves upstream's tracker exactly as the v3.4.1 release image ships it,
@@ -297,12 +328,12 @@ as with upstream:
 <script defer src="https://analytics.example.com/script.js" data-website-id="..."></script>
 ```
 
+`/recorder.js` (see [Session replay](#session-replay)) is vendored the same way.
 To track a newer upstream release, run `python3 tools/tracker/fetch.py <version>`
-and update `SCRIPT_SHA256` in `umami-server/src/tracker.rs`.
+and update `SCRIPT_SHA256` and `RECORDER_SHA256` in `umami-server/src/tracker.rs`.
 
-Not supported: `TRACKER_SCRIPT_URL` (proxying the script from elsewhere),
-`COLLECT_API_HOST` (a build-time option upstream; use `data-host-url` instead) and
-the session-replay `recorder.js`.
+Not supported: `TRACKER_SCRIPT_URL` (proxying the script from elsewhere) and
+`COLLECT_API_HOST` (a build-time option upstream; use `data-host-url` instead).
 
 ## Configuration
 

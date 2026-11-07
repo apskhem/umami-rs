@@ -31,7 +31,6 @@ use crate::error::{
   AppError,
   AppResult,
 };
-use crate::js;
 use crate::permissions::{
   self as can,
   WEBSITE_DELETE,
@@ -223,12 +222,12 @@ pub async fn update(
   // A `null` config clears the settings; otherwise the given ones are merged in.
   let replay_config = replay_input.map(|input| {
     let mut merged = match input {
-      Some(_) => recorder_config(current.replay_config.as_ref().unwrap_or(&Value::Null)),
+      Some(_) => website::recorder_config(current.replay_config.as_ref().unwrap_or(&Value::Null)),
       None => Map::new(),
     };
     merged.extend(input.unwrap_or_default());
-    let next = recorder_config(&Value::Object(merged));
-    let enabled = recorder_enabled(&next);
+    let next = website::recorder_config(&Value::Object(merged));
+    let enabled = website::recorder_enabled(&next);
     (Value::Object(next), enabled)
   });
 
@@ -299,43 +298,6 @@ fn replay_config_input(object: &Map<String, Value>) -> AppResult<Option<Option<M
   }
 
   Ok(Some(Some(parsed)))
-}
-
-/// Upstream's `getRecorderConfig`: the recognized settings of a stored or merged
-/// config, in its key order.
-fn recorder_config(value: &Value) -> Map<String, Value> {
-  let mut config = Map::new();
-  let Some(object) = value.as_object() else {
-    return config;
-  };
-
-  for key in ["replayEnabled", "heatmapEnabled"] {
-    if object.get(key) == Some(&Value::Bool(true)) {
-      config.insert(key.to_owned(), Value::Bool(true));
-    }
-  }
-  for key in ["sampleRate", "heatmapSampleRate"] {
-    if let Some(rate) = object.get(key).and_then(Value::as_f64) {
-      config.insert(key.to_owned(), js::number(rate));
-    }
-  }
-  if let Some(level @ ("strict" | "moderate")) = object.get("maskLevel").and_then(Value::as_str) {
-    config.insert("maskLevel".to_owned(), json!(level));
-  }
-  if let Some(duration) = object.get("maxDuration").and_then(Value::as_f64) {
-    // `Math.round`: halves round up.
-    config.insert("maxDuration".to_owned(), js::number((duration + 0.5).floor()));
-  }
-  if let Some(selector) = object.get("blockSelector").filter(|v| v.is_string()) {
-    config.insert("blockSelector".to_owned(), selector.clone());
-  }
-
-  config
-}
-
-/// Upstream's `getRecorderEnabled`.
-fn recorder_enabled(config: &Map<String, Value>) -> bool {
-  config.contains_key("replayEnabled") || config.contains_key("heatmapEnabled")
 }
 
 /// `DELETE /api/websites/{websiteId}`: deletes the website and its data.
@@ -457,7 +419,7 @@ mod tests {
 
   #[test]
   fn sanitizes_recorder_config_like_upstream() {
-    let config = recorder_config(&json!({
+    let config = website::recorder_config(&json!({
         "replayEnabled": true,
         "heatmapEnabled": false,
         "sampleRate": 0.5,
@@ -476,9 +438,11 @@ mod tests {
           "blockSelector": ".secret",
       })
     );
-    assert!(recorder_enabled(&config));
-    assert!(!recorder_enabled(&recorder_config(&json!({ "heatmapEnabled": false }))));
-    assert!(recorder_config(&json!([1])).is_empty());
+    assert!(website::recorder_enabled(&config));
+    assert!(!website::recorder_enabled(&website::recorder_config(
+      &json!({ "heatmapEnabled": false })
+    )));
+    assert!(website::recorder_config(&json!([1])).is_empty());
   }
 
   #[test]

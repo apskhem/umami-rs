@@ -734,3 +734,145 @@ async fn annotation_routes_validate_before_auth() {
     );
   }
 }
+
+#[tokio::test]
+async fn replay_routes_validate_before_auth() {
+  let base = format!("/api/websites/{WEBSITE}");
+  let range = "startAt=0&endAt=1";
+  let long_path = "/".repeat(501);
+  for uri in [
+    format!("{base}/replays"),
+    format!("{base}/replays?{range}&minDuration=-1"),
+    format!("{base}/replays?{range}&minDuration=1.5"),
+    format!("{base}/replays?{range}&pageSize=0"),
+    format!("{base}/sessions/{WEBSITE}/replays?{range}&page=x"),
+    format!("{base}/replays/saved?pageSize=0"),
+    format!("{base}/heatmaps?startAt=1&endAt=0"),
+    format!("{base}/heatmaps?{range}&mode=move"),
+    format!("{base}/heatmaps?{range}&urlPath={long_path}"),
+  ] {
+    assert_eq!(
+      get(state(""), &uri).await,
+      (StatusCode::BAD_REQUEST, bad_request()),
+      "{uri}"
+    );
+  }
+  let saved = format!("{base}/replays/saved/{WEBSITE}");
+  for body in [
+    json!({}),
+    json!({ "isSaved": "yes" }),
+    json!({ "isSaved": true, "name": "n".repeat(101) }),
+  ] {
+    assert_eq!(
+      post(state(""), &saved, &[], body.clone()).await,
+      (StatusCode::BAD_REQUEST, bad_request()),
+      "{body}"
+    );
+  }
+
+  // Valid requests without credentials never reach the database.
+  assert_eq!(
+    post(state(""), &saved, &[], json!({ "isSaved": true, "name": "n" })).await,
+    (StatusCode::UNAUTHORIZED, unauthorized())
+  );
+  for uri in [
+    format!("{base}/replays?{range}&minDuration=30&search=x&page=2"),
+    format!("{base}/sessions/{WEBSITE}/replays?{range}"),
+    format!("{base}/replays/{WEBSITE}?until=x&chunkIndex=1.5"),
+    format!("{base}/replays/saved?search=x"),
+    saved,
+    format!("{base}/heatmaps?{range}&mode=scroll&urlPath=/"),
+  ] {
+    assert_eq!(
+      get(state(""), &uri).await,
+      (StatusCode::UNAUTHORIZED, unauthorized()),
+      "{uri}"
+    );
+  }
+}
+
+fn recording() -> Value {
+  json!({ "type": "record", "payload": { "website": WEBSITE, "events": [{ "type": 4, "timestamp": 1 }] } })
+}
+
+#[tokio::test]
+async fn record_rejects_invalid_bodies() {
+  for body in [
+    json!(null),
+    json!({ "type": "record", "payload": { "website": WEBSITE } }),
+    json!({ "type": "record", "payload": { "website": "nope", "events": [] } }),
+    json!({ "type": "nope", "payload": { "website": WEBSITE, "events": [] } }),
+    json!({ "type": "record", "payload": { "website": WEBSITE, "events": vec![json!({}); 201] } }),
+    json!({ "type": "record", "payload": { "website": WEBSITE, "events": [], "timestamp": 1.5 } }),
+    json!({ "type": "heatmap", "payload": { "website": WEBSITE, "events": [{ "type": "move", "url": "/" }] } }),
+  ] {
+    assert_eq!(
+      post(state(""), "/api/record", &[], body.clone()).await,
+      (StatusCode::BAD_REQUEST, bad_request()),
+      "{body}"
+    );
+  }
+
+  let oversized = json!({ "type": "record", "payload": { "website": WEBSITE, "events": ["x".repeat(1_000_000)] } });
+  assert_eq!(
+    post(state(""), "/api/record", &[], oversized).await,
+    (
+      StatusCode::PAYLOAD_TOO_LARGE,
+      json!({ "error": { "message": "Payload too large", "code": "payload-too-large", "status": 413 } })
+    )
+  );
+}
+
+#[tokio::test]
+async fn record_needs_a_session_token_for_the_website() {
+  // Nothing to record: answered before the token is checked.
+  let empty = json!({ "type": "heatmap", "payload": { "website": WEBSITE, "events": [] } });
+  assert_eq!(
+    post(state(""), "/api/record", &[], empty).await,
+    (StatusCode::OK, json!({ "ok": true }))
+  );
+
+  let error = |message: &str| json!({ "error": { "message": message, "code": "bad-request", "status": 400 } });
+  assert_eq!(
+    post(state(""), "/api/record", &[], recording()).await,
+    (StatusCode::BAD_REQUEST, error("Missing session token."))
+  );
+  assert_eq!(
+    post(state(""), "/api/record", &[("x-umami-cache", "nope")], recording()).await,
+    (StatusCode::BAD_REQUEST, error("Invalid session token."))
+  );
+
+  // A token issued for another website is refused (upstream records under it).
+  let state = state("");
+  let other = CacheToken::new(
+    Some("6b1f3c2e-8a4d-4e5f-9a0b-1c2d3e4f5a6b".to_owned()),
+    "ef98a066-967b-5a5f-aa43-3c1492f5d34e".to_owned(),
+    "4357da39-efbd-5647-a20c-8896a5379030".to_owned(),
+    chrono::Utc::now().timestamp(),
+    None,
+  )
+  .sign(&state.config.secret);
+  assert_eq!(
+    post(state, "/api/record", &[("x-umami-cache", &other)], recording()).await,
+    (StatusCode::BAD_REQUEST, error("Invalid session token."))
+  );
+}
+
+const RECORDER: &str = include_str!("../assets/recorder.js");
+
+#[tokio::test]
+async fn serves_the_recorder_script() {
+  let (status, headers, body) = get_script(state("/analytics"), "/analytics/recorder.js", &[]).await;
+  assert_eq!(status, StatusCode::OK);
+  assert_eq!(body, Value::String(RECORDER.to_owned()));
+  assert_eq!(headers["content-type"], "application/javascript; charset=utf-8");
+
+  // A tracker alias of the same name serves the tracker instead.
+  let (_, _, body) = get_script(
+    state_with(&[("TRACKER_SCRIPT_NAME", "recorder.js")]),
+    "/recorder.js",
+    &[],
+  )
+  .await;
+  assert_eq!(body, Value::String(TRACKER.to_owned()));
+}

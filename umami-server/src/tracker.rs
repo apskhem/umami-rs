@@ -1,8 +1,9 @@
-//! The tracker script (`/script.js`).
+//! The tracker and recorder scripts (`/script.js`, `/recorder.js`).
 //!
-//! `assets/script.js` is upstream's built tracker, copied byte-for-byte from the
-//! v3.4.1 release image by `tools/tracker/fetch.py`. It posts to `/api/send`
-//! relative to wherever the script itself is served from (or `data-host-url`), so
+//! `assets/script.js` and `assets/recorder.js` are upstream's built tracker and
+//! session recorder, copied byte-for-byte from the v3.4.1 release image by
+//! `tools/tracker/fetch.py`. They post to `/api/send` and `/api/record` relative
+//! to wherever the script itself is served from (or `data-host-url`), so
 //! `BASE_PATH` needs no special handling.
 
 use std::sync::Arc;
@@ -27,12 +28,16 @@ use sha2::{
 };
 
 const SCRIPT: &str = include_str!("../assets/script.js");
+const RECORDER: &str = include_str!("../assets/recorder.js");
 
-/// SHA-256 of `assets/script.js`, so an accidental edit fails the tests.
+/// SHA-256 of `assets/script.js` and `assets/recorder.js`, so an accidental
+/// edit fails the tests.
 #[cfg(test)]
 const SCRIPT_SHA256: &str = "654f12c7548be726eba5b71d5ef8bffc2a41a39a0053e2a49a847869ccd7ac3f";
+#[cfg(test)]
+const RECORDER_SHA256: &str = "21e6312866db01a71841b772c9882333231be1bc3fdbeeac1ed5193794ad80c6";
 
-/// The script as served: built once at startup.
+/// A script as served: built once at startup.
 pub struct TrackerScript {
   body: Bytes,
   etag: HeaderValue,
@@ -47,6 +52,15 @@ impl TrackerScript {
       None => Bytes::from_static(SCRIPT.as_bytes()),
     };
 
+    Self::serving(body)
+  }
+
+  /// The session recorder, as upstream serves it from `public/recorder.js`.
+  pub fn recorder() -> Arc<Self> {
+    Self::serving(Bytes::from_static(RECORDER.as_bytes()))
+  }
+
+  fn serving(body: Bytes) -> Arc<Self> {
     let digest = hex::encode(Sha256::digest(&body));
     let etag = HeaderValue::from_str(&format!("\"{}\"", &digest[..32])).expect("hex is a valid header value");
 
@@ -95,6 +109,7 @@ mod tests {
   #[test]
   fn vendored_script_is_unmodified() {
     assert_eq!(hex::encode(Sha256::digest(SCRIPT.as_bytes())), SCRIPT_SHA256);
+    assert_eq!(hex::encode(Sha256::digest(RECORDER.as_bytes())), RECORDER_SHA256);
     assert_eq!(SCRIPT.matches("/api/send").count(), 1);
   }
 

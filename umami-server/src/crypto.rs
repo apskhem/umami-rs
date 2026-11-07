@@ -100,9 +100,11 @@ pub fn random_chars(n: usize) -> String {
   getrandom::fill(&mut bytes).expect("system randomness");
 
   bytes
-    .chunks_exact(4)
+    .as_chunks::<4>()
+    .0
+    .iter()
     .map(|chunk| {
-      let value = u32::from_le_bytes(chunk.try_into().unwrap());
+      let value = u32::from_le_bytes(*chunk);
       char::from(CHARS[value as usize % CHARS.len()])
     })
     .collect()

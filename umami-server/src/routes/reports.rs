@@ -84,7 +84,7 @@ fn bad() -> AppError {
 
 /// `analyticsSchema`'s checks beyond integer timestamps: both at least 0, and
 /// `endAt` not before `startAt`.
-fn check_range(params: &Params) -> AppResult<()> {
+pub(super) fn check_range(params: &Params) -> AppResult<()> {
   let number = |key: &str| params.get(key).map_or(f64::NAN, js::string_to_number);
   let (start, end) = (number("startAt"), number("endAt"));
   if start >= 0.0 && end >= start {

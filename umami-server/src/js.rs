@@ -246,9 +246,65 @@ pub fn number(x: f64) -> serde_json::Value {
   }
 }
 
+/// `JSON.stringify` of a JSON value: as `serde_json` writes it, except for
+/// numbers, which print as JavaScript prints them (`1` for `1.0`, `1e+21`).
+pub fn stringify(value: &serde_json::Value) -> String {
+  let mut out = String::new();
+  write_json(value, &mut out);
+  out
+}
+
+fn write_json(value: &serde_json::Value, out: &mut String) {
+  use serde_json::Value;
+
+  match value {
+    Value::Null => out.push_str("null"),
+    Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+    Value::Number(n) => {
+      match n.as_f64().filter(|x| x.is_finite()) {
+        Some(x) => out.push_str(&number_to_string(x)),
+        None => out.push_str("null"),
+      }
+    }
+    Value::String(s) => out.push_str(&serde_json::to_string(s).expect("strings serialize")),
+    Value::Array(items) => {
+      out.push('[');
+      for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+          out.push(',');
+        }
+        write_json(item, out);
+      }
+      out.push(']');
+    }
+    Value::Object(object) => {
+      out.push('{');
+      for (i, (key, item)) in object.iter().enumerate() {
+        if i > 0 {
+          out.push(',');
+        }
+        out.push_str(&serde_json::to_string(key).expect("strings serialize"));
+        out.push(':');
+        write_json(item, out);
+      }
+      out.push('}');
+    }
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn stringifies_like_javascript() {
+    let value: serde_json::Value =
+      serde_json::from_str(r#"{"b":[1.0,2.5,1e21,-0.0,12345678901234567890],"a":"\u0001\"x\u2028","c":null}"#).unwrap();
+    assert_eq!(
+      stringify(&value),
+      "{\"b\":[1,2.5,1e+21,0,12345678901234567000],\"a\":\"\\u0001\\\"x\u{2028}\",\"c\":null}"
+    );
+  }
 
   #[test]
   fn formats_dates_like_javascript() {

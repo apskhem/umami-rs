@@ -55,6 +55,7 @@ mod heartbeat;
 mod links;
 mod me;
 pub(crate) mod params;
+mod replays;
 mod reports;
 mod segments;
 mod shares;
@@ -295,6 +296,19 @@ pub fn router(config: &Config) -> Router<AppState> {
         .post(annotations::update)
         .delete(annotations::delete),
     )
+    .route("/api/websites/{websiteId}/recorder", get(replays::recorder))
+    .route("/api/websites/{websiteId}/replays", get(replays::list))
+    .route("/api/websites/{websiteId}/replays/saved", get(replays::saved_list))
+    .route(
+      "/api/websites/{websiteId}/replays/saved/{replayId}",
+      get(replays::is_saved).post(replays::save),
+    )
+    .route("/api/websites/{websiteId}/replays/{replayId}", get(replays::get))
+    .route(
+      "/api/websites/{websiteId}/sessions/{sessionId}/replays",
+      get(replays::session_list),
+    )
+    .route("/api/websites/{websiteId}/heatmaps", get(replays::heatmaps))
     .route("/api/realtime/{websiteId}", get(analytics::realtime))
     .route("/api/websites/{websiteId}/reset", post(websites::reset))
     .route(
@@ -375,7 +389,8 @@ pub fn router(config: &Config) -> Router<AppState> {
     .route("/q/{slug}", get(collect::link))
     .route("/p/{slug}", get(collect::pixel))
     .route("/api/send", post(collect::send))
-    .route("/api/batch", post(collect::batch));
+    .route("/api/batch", post(collect::batch))
+    .route("/api/record", post(collect::record));
 
   if let Some(alias) = config.collect.endpoint_alias.as_deref()
     && alias != "/api/send"
@@ -389,6 +404,19 @@ pub fn router(config: &Config) -> Router<AppState> {
 
   for path in std::iter::once("/script.js").chain(config.tracker_script_aliases.iter().map(String::as_str)) {
     router = router.route(path, serve_script.clone());
+  }
+
+  // A tracker alias of the same name takes precedence, as upstream's rewrite does.
+  if !config
+    .tracker_script_aliases
+    .iter()
+    .any(|alias| alias == "/recorder.js")
+  {
+    let recorder = TrackerScript::recorder();
+    router = router.route(
+      "/recorder.js",
+      get(move |headers: HeaderMap| async move { recorder.respond(&headers) }),
+    );
   }
 
   router
