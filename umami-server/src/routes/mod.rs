@@ -33,6 +33,10 @@ use self::links::{
   Links,
   Pixels,
 };
+use self::reports::{
+  Funnels,
+  Goals,
+};
 use crate::collect;
 use crate::config::Config;
 use crate::state::AppState;
@@ -50,6 +54,7 @@ mod heartbeat;
 mod links;
 mod me;
 pub(crate) mod params;
+mod reports;
 mod segments;
 mod shares;
 mod teams;
@@ -219,6 +224,66 @@ pub fn router(config: &Config) -> Router<AppState> {
       "/api/websites/{websiteId}/session-data/values",
       get(data::session_data_values),
     )
+    .route(
+      "/api/websites/{websiteId}/funnels",
+      get(reports::list::<Funnels>).post(reports::create::<Funnels>),
+    )
+    .route(
+      "/api/websites/{websiteId}/funnels/stats",
+      get(reports::stats::<Funnels>),
+    )
+    .route(
+      "/api/websites/{websiteId}/funnels/{funnelId}",
+      get(reports::get::<Funnels>)
+        .post(reports::update::<Funnels>)
+        .delete(reports::delete::<Funnels>),
+    )
+    .route(
+      "/api/websites/{websiteId}/funnels/{funnelId}/stats",
+      get(reports::saved_stats::<Funnels>),
+    )
+    .route(
+      "/api/websites/{websiteId}/goals",
+      get(reports::list::<Goals>).post(reports::create::<Goals>),
+    )
+    .route("/api/websites/{websiteId}/goals/stats", get(reports::stats::<Goals>))
+    .route(
+      "/api/websites/{websiteId}/goals/{goalId}",
+      get(reports::get::<Goals>)
+        .post(reports::update::<Goals>)
+        .delete(reports::delete::<Goals>),
+    )
+    .route(
+      "/api/websites/{websiteId}/goals/{goalId}/stats",
+      get(reports::saved_stats::<Goals>),
+    )
+    .route("/api/websites/{websiteId}/journeys", get(reports::journeys))
+    .route("/api/websites/{websiteId}/retention", get(reports::retention))
+    .route("/api/websites/{websiteId}/breakdown", get(reports::breakdown))
+    .route("/api/websites/{websiteId}/utm/metrics", get(reports::utm_metrics))
+    .route("/api/websites/{websiteId}/attribution", get(reports::attribution))
+    .route(
+      "/api/websites/{websiteId}/performance/chart",
+      get(reports::performance_chart),
+    )
+    .route(
+      "/api/websites/{websiteId}/performance/metrics",
+      get(reports::performance_metrics),
+    )
+    .route(
+      "/api/websites/{websiteId}/performance/stats",
+      get(reports::performance_stats),
+    )
+    .route("/api/websites/{websiteId}/revenue/chart", get(reports::revenue_chart))
+    .route(
+      "/api/websites/{websiteId}/revenue/metrics",
+      get(reports::revenue_metrics),
+    )
+    .route(
+      "/api/websites/{websiteId}/revenue/sessions",
+      get(reports::revenue_sessions),
+    )
+    .route("/api/websites/{websiteId}/revenue/stats", get(reports::revenue_stats))
     .route("/api/realtime/{websiteId}", get(analytics::realtime))
     .route("/api/websites/{websiteId}/reset", post(websites::reset))
     .route(

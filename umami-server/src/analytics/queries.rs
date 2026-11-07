@@ -377,7 +377,7 @@ pub async fn event_metrics(
 }
 
 /// Upstream's channel lists (`SEARCH_DOMAINS` and the rest).
-const SOCIAL_DOMAINS: &[&str] = &[
+pub(super) const SOCIAL_DOMAINS: &[&str] = &[
   "bsky.app",
   "facebook.com",
   "fb.com",
@@ -394,7 +394,7 @@ const SOCIAL_DOMAINS: &[&str] = &[
   "twitter.com",
   "x.com",
 ];
-const SEARCH_DOMAINS: &[&str] = &[
+pub(super) const SEARCH_DOMAINS: &[&str] = &[
   "baidu.com",
   "bing.com",
   "duckduckgo.com",
@@ -404,7 +404,7 @@ const SEARCH_DOMAINS: &[&str] = &[
   "search.brave.com",
   "yandex.",
 ];
-const LLM_DOMAINS: &[&str] = &[
+pub(super) const LLM_DOMAINS: &[&str] = &[
   "chatgpt.com",
   "claude.ai",
   "copilot.microsoft.com",
@@ -412,7 +412,7 @@ const LLM_DOMAINS: &[&str] = &[
   "meta.ai",
   "perplexity.ai",
 ];
-const SHOPPING_DOMAINS: &[&str] = &[
+pub(super) const SHOPPING_DOMAINS: &[&str] = &[
   "alibaba.com",
   "aliexpress.com",
   "amazon.",
@@ -423,7 +423,7 @@ const SHOPPING_DOMAINS: &[&str] = &[
   "target.com",
   "walmart.com",
 ];
-const EMAIL_DOMAINS: &[&str] = &[
+pub(super) const EMAIL_DOMAINS: &[&str] = &[
   "gmail.",
   "hotmail.",
   "mail.yahoo.",
@@ -431,8 +431,8 @@ const EMAIL_DOMAINS: &[&str] = &[
   "proton.me",
   "protonmail.",
 ];
-const VIDEO_DOMAINS: &[&str] = &["twitch.", "youtube."];
-const PAID_AD_PARAMS: &[&str] = &[
+pub(super) const VIDEO_DOMAINS: &[&str] = &["twitch.", "youtube."];
+pub(super) const PAID_AD_PARAMS: &[&str] = &[
   "ad_id=",
   "aid=",
   "dclid=",
@@ -453,7 +453,7 @@ const PAID_AD_PARAMS: &[&str] = &[
 ];
 
 /// `column ilike '%value%'` for each value, OR-ed, matching the values literally.
-fn like_any(column: &str, values: &[&str]) -> String {
+pub(super) fn like_any(column: &str, values: &[&str]) -> String {
   values
     .iter()
     .map(|value| {

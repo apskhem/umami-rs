@@ -635,3 +635,67 @@ async fn data_routes_validate_before_auth() {
     );
   }
 }
+
+#[tokio::test]
+async fn report_routes_validate_before_auth() {
+  let base = format!("/api/websites/{WEBSITE}");
+  let range = "startAt=0&endAt=1";
+  for uri in [
+    format!("{base}/retention?startAt=1&endAt=0"),
+    format!("{base}/retention?startAt=-1&endAt=0"),
+    format!("{base}/journeys?{range}&steps=9"),
+    format!("{base}/breakdown?{range}&fields=%5B%5D"),
+    format!("{base}/breakdown?{range}&fields=%5B%22os%22,1%5D"),
+    format!("{base}/utm/metrics?{range}"),
+    format!("{base}/attribution?{range}&model=first-click&type=page&step=/"),
+    format!("{base}/performance/metrics?{range}&type=path&limit=501"),
+    format!("{base}/revenue/chart?{range}"),
+    format!("{base}/revenue/metrics?{range}&currency=USD"),
+    format!("{base}/funnels/stats?{range}&window=-1&steps=%5B%5D"),
+    format!("{base}/goals/stats?{range}&value=x"),
+    format!("{base}/goals?pageSize=0"),
+  ] {
+    assert_eq!(
+      get(state(""), &uri).await,
+      (StatusCode::BAD_REQUEST, bad_request()),
+      "{uri}"
+    );
+  }
+  for (uri, body) in [
+    (
+      format!("{base}/funnels"),
+      json!({ "name": "n", "parameters": { "window": 1, "steps": [] } }),
+    ),
+    (
+      format!("{base}/goals"),
+      json!({ "name": "", "parameters": { "type": "path", "value": "/" } }),
+    ),
+    (
+      format!("{base}/goals/{WEBSITE}"),
+      json!({ "parameters": { "type": "path", "value": "/" } }),
+    ),
+  ] {
+    assert_eq!(
+      post(state(""), &uri, &[], body.clone()).await,
+      (StatusCode::BAD_REQUEST, bad_request()),
+      "{uri} {body}"
+    );
+  }
+
+  // Valid requests without credentials never reach the database.
+  for uri in [
+    format!("{base}/retention?{range}&unit=day"),
+    format!("{base}/journeys?{range}&steps=2.5"),
+    format!("{base}/breakdown?{range}&fields=%5B%22os%22,%22os%22%5D"),
+    format!("{base}/revenue/stats?{range}&currency=usd"),
+    format!("{base}/goals/stats?{range}&type=anything&value=x"),
+    format!("{base}/funnels"),
+    format!("{base}/goals/{WEBSITE}"),
+  ] {
+    assert_eq!(
+      get(state(""), &uri).await,
+      (StatusCode::UNAUTHORIZED, unauthorized()),
+      "{uri}"
+    );
+  }
+}

@@ -8,6 +8,7 @@
 pub mod api_key;
 pub mod board;
 pub mod link;
+pub mod report;
 pub mod segment;
 pub mod share;
 pub mod team;

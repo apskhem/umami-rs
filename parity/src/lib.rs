@@ -13,6 +13,7 @@ use umami_server::collect::CacheToken;
 use umami_server::crypto;
 use uuid::Uuid;
 
+pub mod dataset;
 pub mod fixtures;
 
 /// The `APP_SECRET` both servers run with (see `compose.yaml`).

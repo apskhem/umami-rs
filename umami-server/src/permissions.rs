@@ -14,6 +14,7 @@ use crate::error::{
   AppError,
   AppResult,
 };
+use crate::queries::report::Report;
 use crate::queries::{
   board,
   team,
@@ -611,6 +612,52 @@ pub async fn can_change_website(db: &PgPool, auth: &Auth, website_id: &str, perm
     Some(website) => website.owner().permits(db, user.id, Some(permission)).await,
     None => Ok(false),
   }
+}
+
+// Reports
+
+/// Upstream's `getReportSection`: the share-link section that shows a report
+/// type, if any.
+fn report_section(kind: &str) -> Option<&'static str> {
+  Some(match kind {
+    "attribution" => "attribution",
+    "breakdown" => "breakdown",
+    "performance" => "performance",
+    "retention" => "retention",
+    "revenue" => "revenue",
+    "utm" => "utm",
+    "funnel" => "funnels",
+    "goal" => "goals",
+    "journey" => "journeys",
+    _ => return None,
+  })
+}
+
+/// Upstream's `canViewReport`: admins, its creator, or whoever can view its
+/// section of the website (share links included).
+pub async fn can_view_report(db: &PgPool, auth: &Auth, report: &Report) -> AppResult<bool> {
+  if is_admin(auth) || auth.user.as_ref().is_some_and(|user| user.id == report.user_id) {
+    return Ok(true);
+  }
+
+  let website_id = report.website_id.to_string();
+  match report_section(&report.kind) {
+    Some(section) => can_view_website_section(db, auth, &website_id, &[section]).await,
+    None => Ok(auth.user.is_some() && can_view_website(db, auth, &website_id).await?),
+  }
+}
+
+/// Upstream's `canUpdateReport` (`website:update`) and `canDeleteReport`
+/// (`website:delete`): admins, its creator, or whoever may change the website.
+pub async fn can_change_report(db: &PgPool, auth: &Auth, report: &Report, permission: &str) -> AppResult<bool> {
+  let Some(user) = &auth.user else {
+    return Ok(false);
+  };
+  if user.is_admin || user.id == report.user_id {
+    return Ok(true);
+  }
+
+  can_change_website(db, auth, &report.website_id.to_string(), permission).await
 }
 
 /// Upstream's `canTransferWebsiteToUser`: team owners may take a team website

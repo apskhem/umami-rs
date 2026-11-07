@@ -408,6 +408,13 @@ impl QueryFilters {
     }
   }
 
+  /// The same filters without any `name` filter (numbered copies included).
+  pub fn without(&self, name: &str) -> Self {
+    let mut filters = self.clone();
+    filters.entries.retain(|(key, _)| base_name(key) != name);
+    filters
+  }
+
   /// The filter under exactly `key`, if given.
   pub fn get(&self, key: &str) -> Option<&FilterValue> {
     self.entries.iter().find(|(k, _)| k == key).map(|(_, value)| value)

@@ -139,7 +139,8 @@ async fn creating_shares() {
   stack
     .assert_same_snapshot(
       "select entity_id, name, share_type, parameters, length(slug) as slug_length, \
-       created_at = updated_at as fresh from share where entity_id = any($1) order by name",
+       created_at = updated_at as fresh from share where entity_id = any($1) \
+       order by name, parameters::text",
       &[own, team_site, link],
       "created shares",
     )

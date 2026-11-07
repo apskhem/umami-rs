@@ -247,6 +247,30 @@ Differences from upstream:
   database), and an event's properties are listed by name.
 - A malformed event ID is a 404 where upstream fails with a 500.
 
+## Reports
+
+The report routes under `/api/websites/{id}`: saved funnels and goals
+(`funnels` and `goals`, each listed, created, read, updated and deleted, with
+`stats` for an unsaved one given by the query and `/{id}/stats` for a saved
+one), `journeys`, `retention`, `breakdown`, `utm/metrics`, `attribution`,
+`performance` (`chart`, `metrics`, `stats`) and `revenue` (`chart`, `metrics`,
+`sessions`, `stats`). They take the analytics filters, segments and cohorts,
+validate parameters as upstream's schemas do (`startAt` no later than `endAt`,
+funnels of 2 to 8 steps, and so on), and return upstream's shapes and JSON
+types. Share links see the reports whose sections they enable.
+
+Differences from upstream:
+
+- Lists break ties by name (journeys by their steps); upstream leaves them to
+  the database.
+- The revenue sessions list has one row per session, as the sessions list does.
+- A breakdown without fields is a 400, and a field named twice is grouped by
+  once; upstream fails with a 500 on both. A fractional journey `steps` follows
+  the whole steps (upstream fails with a 500 when it also has an `endStep`).
+- A malformed report ID is a 404 where upstream fails with a 500, and admins
+  cannot save a report for a website that does not exist (404; upstream stores
+  it).
+
 ## Tracker script
 
 `/script.js` serves upstream's tracker exactly as the v3.4.1 release image ships it,
